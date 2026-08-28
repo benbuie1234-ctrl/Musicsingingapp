@@ -82,7 +82,14 @@ def _parabolic(dprime, taus):
 
 
 def track(x, sr, hop, frame=2048, fmin=FMIN, fmax=FMAX, threshold=THRESHOLD):
-    """Return (f0_hz, aperiodicity, rms) per frame. f0 is 0.0 where unvoiced."""
+    """Return (f0_hz, aperiodicity, rms) per frame.
+
+    Every frame gets an estimate: when no dip falls below the threshold we still
+    return the global minimum and report its (high) aperiodicity, leaving the
+    voicing decision to the caller. Zeroing those frames instead discarded 56%
+    of a real vocal -- breathy onsets and transitions rarely clear a hard
+    threshold, and they are exactly the moments a singer needs marked.
+    """
     tau_min = max(2, int(sr / fmax))
     tau_max = min(frame // 2, int(sr / fmin) + 2)
 
@@ -100,9 +107,8 @@ def track(x, sr, hop, frame=2048, fmin=FMIN, fmax=FMAX, threshold=THRESHOLD):
     for s in range(0, n, step):
         e = min(s + step, n)
         dprime = _difference(frames[s:e], tau_max)
-        taus, has = _absolute_threshold(dprime, tau_min, threshold)
+        taus, _ = _absolute_threshold(dprime, tau_min, threshold)
         refined = _parabolic(dprime, taus)
         f0[s:e] = np.where(refined > 0, sr / np.maximum(refined, 1e-9), 0.0)
         aper[s:e] = dprime[np.arange(e - s), taus]
-        f0[s:e] = np.where(has, f0[s:e], 0.0)
     return f0, aper, rms

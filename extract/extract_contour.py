@@ -20,10 +20,10 @@ from yin import track
 
 SR = 44100
 HOP = 441                 # 10 ms
-APERIODICITY_MAX = 0.20   # above this, YIN isn't confident it found a period
-LEVEL_FLOOR_DB = -32.0    # relative to the stem's 95th-percentile level
+APERIODICITY_MAX = 0.45   # above this, YIN isn't confident it found a period
+LEVEL_FLOOR_DB = -26.0    # relative to the stem's 95th-percentile level
 MIN_RUN_MS = 60           # drop voiced islands shorter than this
-MAX_GAP_MS = 50           # bridge unvoiced gaps shorter than this
+MAX_GAP_MS = 120          # bridge unvoiced gaps shorter than this
 
 
 def _bridge_and_prune(voiced, hop_ms, max_gap_ms, min_run_ms):
@@ -75,7 +75,7 @@ def _repair_octaves(midi, voiced):
     return out
 
 
-def _median_filter(x, voiced, k=5):
+def _median_filter(x, voiced, k=7):
     """Light smoothing that never averages across a voiced/unvoiced boundary."""
     out = x.copy()
     half = k // 2

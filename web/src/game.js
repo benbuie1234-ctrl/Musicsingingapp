@@ -5,9 +5,10 @@ import { midiToName } from "./yin.js";
 const PPS = 190;          // pixels per second of scroll
 const NOW_X = 0.18;       // the now-line, as a fraction of canvas width
 const TOL = 0.7;          // semitones; also the half-height of a note block
-const HIT_RATIO = 0.5;    // fraction of a note you must hold to count it
+const HIT_RATIO = 0.4;    // fraction of a note you must hold to count it
 const MISS_RATIO = 0.2;   // below this the block goes red
-const TRAIL_SEC = 1.1;
+const GRACE = 0.15;       // seconds of timing slack on either side of a note
+const TRAIL_SEC = 0.4;
 const PAD_TOP = 92;
 const PAD_BOTTOM = 150;
 const WINDOW_ST = 17;     // semitones visible at once
@@ -103,6 +104,22 @@ export class Game {
     return PAD_TOP + (1 - (midi - this.lo) / span) * usable;
   }
 
+  // What matters is the note, not the octave. A voice that cannot reach the
+  // register of the record can still sing the line correctly, so the sung pitch
+  // is folded to whichever octave sits nearest the target before comparing.
+  static fold(sung, reference) {
+    return sung - 12 * Math.round((sung - reference) / 12);
+  }
+
+  // The target the ball should be measured against right now: the note being
+  // sung if there is one, otherwise the middle of the visible window.
+  _reference(at) {
+    for (const n of this.notes) {
+      if (at >= n.start - GRACE && at <= n.end + GRACE) return n.midi;
+    }
+    return this.center != null ? this.center : (this.mapLo + this.mapHi) / 2;
+  }
+
   get semitonePx() {
     return (this.h - PAD_TOP - PAD_BOTTOM) / (this.hi - this.lo);
   }
@@ -118,8 +135,12 @@ export class Game {
     const raw = this.mic.read();
 
     if (raw != null) {
-      // light smoothing so the ball glides instead of twitching
-      this.smooth = this.smooth == null ? raw : this.smooth + 0.35 * (raw - this.smooth);
+      const folded = Game.fold(raw, this._reference(scoreNow));
+      // light smoothing so the ball glides instead of twitching -- but a fold to
+      // a new octave is a jump, not a glide, so don't slur across it
+      this.smooth = (this.smooth == null || Math.abs(folded - this.smooth) > 6)
+        ? folded
+        : this.smooth + 0.35 * (folded - this.smooth);
       this.trail.push({ t: now, m: this.smooth });
     } else {
       this.smooth = null;
@@ -137,12 +158,16 @@ export class Game {
     const sung = this.smooth;
     for (const n of this.notes) {
       if (n.done) continue;
-      if (now >= n.start && now <= n.end) {
-        n.passed++;
-        if (sung != null && Math.abs(sung - n.midi) <= TOL) n.hit++;
-      } else if (now > n.end) {
+      // Credit is given over a slightly wider window than the note itself: a
+      // singer reacting to a block arriving is always a little behind it, and
+      // that lag is not a pitch error. Only the note's own span counts towards
+      // the denominator, so the ratio is clamped rather than inflated.
+      if (now >= n.start - GRACE && now <= n.end + GRACE) {
+        if (now >= n.start && now <= n.end) n.passed++;
+        if (sung != null && Math.abs(Game.fold(sung, n.midi) - n.midi) <= TOL) n.hit++;
+      } else if (now > n.end + GRACE) {
         n.done = true;
-        n.ratio = n.passed ? n.hit / n.passed : 0;
+        n.ratio = n.passed ? Math.min(1, n.hit / n.passed) : 0;
         // A note we never actually observed -- the tab was hidden, the song was
         // seeked past it, or the frame rate dropped out -- is not a miss. It
         // never got a fair chance, so it stays out of the score entirely.
@@ -230,15 +255,16 @@ export class Game {
       } else if (n.done) {
         base = "rgba(150,150,162,.14)";   // passed unobserved; not judged
       }
+      const radius = Math.min(10, barH / 2);
       g.fillStyle = base;
-      roundRect(g, x0, top, width, barH, barH / 2);
+      roundRect(g, x0, top, width, barH, radius);
       g.fill();
 
       // green fill over the portion already sung, scaled by how much landed
       const passedW = Math.max(0, Math.min(x1, nowX) - x0);
       if (passedW > 0 && ratio > 0) {
         g.save();
-        roundRect(g, x0, top, width, barH, barH / 2);
+        roundRect(g, x0, top, width, barH, radius);
         g.clip();
         g.fillStyle = ratio >= HIT_RATIO ? "rgba(53,208,127,.92)" : "rgba(53,208,127,.55)";
         g.fillRect(x0, top, passedW * ratio, barH);
@@ -252,22 +278,24 @@ export class Game {
     }
   }
 
+  // A comet, not a graph line: the tail narrows and fades away behind the ball
+  // over a few hundred milliseconds.
   _drawTrail(now, nowX) {
     const g = this.ctx;
-    g.strokeStyle = "rgba(255,255,255,.9)";
-    g.lineWidth = 3;
-    g.lineJoin = "round";
     g.lineCap = "round";
-    let drawing = false;
-    g.beginPath();
-    for (const p of this.trail) {
-      if (p.m == null) { drawing = false; continue; }
-      const x = nowX - (now - p.t) * PPS;
-      const y = this.y(p.m + 0);
-      if (!drawing) { g.moveTo(x, y); drawing = true; }
-      else g.lineTo(x, y);
+    const pts = this.trail;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      if (a.m == null || b.m == null) continue;
+      const f = 1 - (now - b.t) / TRAIL_SEC;   // 1 at the ball, 0 at the tail
+      if (f <= 0) continue;
+      g.strokeStyle = `rgba(255,255,255,${(0.85 * f * f).toFixed(3)})`;
+      g.lineWidth = 0.8 + 5.2 * f * f;
+      g.beginPath();
+      g.moveTo(nowX - (now - a.t) * PPS, this.y(a.m));
+      g.lineTo(nowX - (now - b.t) * PPS, this.y(b.m));
+      g.stroke();
     }
-    g.stroke();
   }
 
   _drawBall(nowX, scoreNow) {
@@ -278,8 +306,8 @@ export class Game {
     // is the ball currently inside a block?
     let inTune = false;
     for (const n of this.notes) {
-      if (scoreNow >= n.start && scoreNow <= n.end) {
-        if (Math.abs(this.smooth - n.midi) <= TOL) inTune = true;
+      if (scoreNow >= n.start - GRACE && scoreNow <= n.end + GRACE) {
+        if (Math.abs(Game.fold(this.smooth, n.midi) - n.midi) <= TOL) inTune = true;
         break;
       }
     }

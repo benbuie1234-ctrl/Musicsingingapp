@@ -103,10 +103,30 @@ measured rather than assumed:
 
 ## How scoring works
 
-A note counts as hit if you held it within 0.7 semitones for at least half its length.
-That tolerance is exactly the on-screen thickness of the block, so the rule is simply:
-if the ball is inside the block, you are in tune. The score is the percentage of notes
-hit.
+**Pitch class, not register.** The sung pitch is folded to whichever octave sits
+nearest the target before it is compared, so a voice that cannot reach the record's
+register still scores the line correctly. This is not a free pass: folding accepts
+octaves and nothing else — a fifth off still fails.
+
+A note counts as hit if you held it within 0.7 semitones for at least 40% of its
+length. That tolerance is exactly the on-screen thickness of the block, so the rule is
+simply: if the ball is inside the block, you are in tune.
+
+**Timing has 150 ms of slack either side.** A singer reacting to a block arriving is
+always slightly behind it, and that lag is not a pitch error. Only the note's own span
+counts towards the denominator, so the ratio is clamped rather than inflated. Measured
+against a simulated singer, a lag anywhere from 0 to 180 ms costs nothing; being a beat
+late still does.
 
 Notes that pass without ever being observed — a hidden tab, a frame-rate collapse — are
 excluded from the score rather than counted as misses.
+
+## Note blocks
+
+Blocks tile each sung phrase: within a phrase they meet edge to edge, so a block ends
+exactly where the singer moves to the next note. Segments that come out too short are
+absorbed into whichever neighbour is closer in pitch, never dropped — dropping them
+punched holes in the middle of phrases, where the singer is plainly still singing but
+nothing was being asked of them.
+
+A gap between blocks therefore means one thing only: nobody is singing.

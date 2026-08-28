@@ -53,7 +53,10 @@ export class Yin {
       cmnd[tau] = running > 1e-12 ? (diff[tau] * tau) / running : 1;
     }
 
-    // first local minimum below threshold, else give up
+    // First local minimum below threshold. If nothing clears it we fall back to
+    // the global minimum and report its aperiodicity rather than giving up --
+    // breathy and transitional frames rarely clear a hard threshold, and
+    // discarding them threw away over half of a real vocal.
     let tau = -1;
     for (let t = tauMin; t < tauMax; t++) {
       if (cmnd[t] < THRESHOLD) {
@@ -62,7 +65,11 @@ export class Yin {
         break;
       }
     }
-    if (tau < 0) return { f0: 0, aperiodicity: 1, rms };
+    if (tau < 0) {
+      let best = tauMin;
+      for (let t = tauMin; t < tauMax; t++) if (cmnd[t] < cmnd[best]) best = t;
+      tau = best;
+    }
 
     // parabolic refinement of the minimum
     let refined = tau;
