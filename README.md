@@ -34,8 +34,13 @@ web/public/maps/    generated pitch-contour JSON, one per song
 
 ## Reference audio is not in this repo
 
-`.gitignore` excludes all audio. Commercial tracks and any stems separated from them
-stay on local disk — only the derived contour JSON is committed.
+`.gitignore` excludes all audio: commercial tracks and any stems separated from them
+stay on local disk.
+
+Generated contour JSON is also ignored by default. A pitch contour is effectively a
+machine-readable transcription of a copyrighted melody — nearer to sheet music than
+to analysis — and this repo is public, so third-party maps stay local too. Maps for
+your own songs can be committed with `git add -f`.
 
 ## Running locally
 

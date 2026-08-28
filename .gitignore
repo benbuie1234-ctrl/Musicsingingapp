@@ -12,6 +12,12 @@ separated/
 stems/
 audio/
 
+# Derived pitch maps for third-party songs also stay local. A contour is a
+# machine-readable transcription of a copyrighted melody -- closer to sheet
+# music than to analysis -- and this repo is public. Maps for your own songs
+# can be force-added.
+web/public/maps/*.json
+
 # --- Python ---
 .venv/
 venv/
