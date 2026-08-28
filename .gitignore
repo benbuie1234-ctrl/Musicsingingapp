@@ -1,0 +1,41 @@
+# --- Audio: never commit copyrighted source material or derived stems ---
+# This repo is public. Reference tracks stay local; only note maps ship.
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.aiff
+*.aif
+*.ogg
+*.opus
+separated/
+stems/
+audio/
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.python-version
+
+# --- Node ---
+node_modules/
+dist/
+.wrangler/
+
+# --- macOS ---
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# --- Editors ---
+.vscode/
+.idea/
+
+# --- Local config / secrets ---
+.env
+.env.*
+!.env.example
+.dev.vars
