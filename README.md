@@ -76,6 +76,39 @@ python3 serve.py
 Then open <http://localhost:8000> and press Sing. **Use headphones**, otherwise the mic
 hears the backing track and scores the song against itself.
 
+### On a phone
+
+`localhost` is a secure origin; your phone reaching this machine by LAN IP is not, and
+the browser will refuse the microphone without even prompting. So serve over TLS:
+
+```bash
+python3 serve.py --https
+```
+
+That generates a self-signed certificate and prints the address to open on the phone.
+Accept the certificate warning once and the mic works. Wired headphones are worth it —
+Bluetooth adds 100-300 ms that the browser under-reports.
+
+## Layout
+
+Built mobile first. The display is laid out in **time and semitones**, not pixels: the
+scroll speed follows the viewport width so roughly 3.2 seconds of upcoming melody stays
+on screen at any size, and the visible pitch range narrows on short screens so blocks
+keep a height you can actually aim at. A phone sees the same stretch of music as a
+desktop rather than a cropped slice of it.
+
+Measured across sizes — seconds visible ahead / semitones shown / block height:
+
+| | ahead | semitones | block |
+|---|---|---|---|
+| iPhone SE portrait (320x568) | 3.2 s | 17 | 30 px |
+| iPhone portrait (375x812) | 3.2 s | 17 | 46 px |
+| iPhone landscape (812x375) | 3.2 s | 15.7 | 22 px |
+| laptop (1280x760) | 3.9 s | 17 | 43 px |
+
+The single CSS media query at 700 px only adds back what there is room for — the artist
+name, the best score, side-by-side cards. It is the same design with more space.
+
 Append `?debug` to the URL to expose `window.__sing` with the song clock, the audio
 context and the live scoring state.
 

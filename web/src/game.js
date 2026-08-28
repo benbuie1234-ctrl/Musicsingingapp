@@ -2,18 +2,23 @@
 // "now" line, and a ball rides at the height of whatever you are singing.
 import { midiToName } from "./yin.js";
 
-const PPS = 190;          // pixels per second of scroll
-const NOW_X = 0.18;       // the now-line, as a fraction of canvas width
 const TOL = 0.7;          // semitones; also the half-height of a note block
 const HIT_RATIO = 0.4;    // fraction of a note you must hold to count it
 const MISS_RATIO = 0.2;   // below this the block goes red
 const GRACE = 0.15;       // seconds of timing slack on either side of a note
 const TRAIL_SEC = 0.4;
-const PAD_TOP = 92;
-const PAD_BOTTOM = 150;
-const WINDOW_ST = 17;     // semitones visible at once
 const FOLLOW = 0.035;     // how fast the pitch axis chases the melody
 const LOOKAHEAD = 3.0;    // seconds of upcoming melody the axis aims to fit
+
+// The display is laid out in TIME and SEMITONES, not pixels, so a phone shows
+// the same stretch of music as a desktop rather than a cropped slice of it.
+// Scroll speed and the visible pitch range are derived from the viewport to
+// keep these two constant; only then are they clamped to stay readable.
+const SEE_AHEAD_SEC = 3.2;   // how much of the coming melody stays on screen
+const MIN_SEMITONE_PX = 16;  // below this a block is too thin to aim at
+const MAX_WINDOW_ST = 17;    // semitones visible at once, at most
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 export class Game {
   constructor(canvas, song, audio, mic) {
@@ -49,6 +54,28 @@ export class Game {
     this._resize();
   }
 
+  // Everything size-dependent, derived once per resize.
+  _layout() {
+    const { w, h } = this;
+    const small = Math.min(w, h);
+    this.ui = clamp(small / 420, 0.78, 1.3);      // one scale factor for chrome
+
+    this.nowX = clamp(w * 0.2, 52, 260);
+    // hold the seconds-on-screen constant, then clamp so it stays sane
+    this.pps = clamp((w - this.nowX) / SEE_AHEAD_SEC, 78, 260);
+
+    this.padTop = clamp(h * 0.13, 52, 100);
+    this.padBottom = clamp(h * 0.19, 72, 150);
+    const usable = Math.max(40, h - this.padTop - this.padBottom);
+    // fewer semitones on a short screen, so blocks keep a touchable height
+    this.windowSt = clamp(usable / MIN_SEMITONE_PX, 8, MAX_WINDOW_ST);
+
+    this.margin = clamp(w * 0.035, 10, 26);
+    this.mapH = clamp(h * 0.032, 14, 26);
+    this.fontPx = Math.round(clamp(11 * this.ui, 9, 14));
+    this.ballR = clamp(6.5 * this.ui, 5, 9);
+  }
+
   destroy() {
     this.running = false;
     window.removeEventListener("resize", this._resize);
@@ -64,6 +91,7 @@ export class Game {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.w = w;
     this.h = h;
+    this._layout();
 
     const pitches = this.notes.map((n) => n.midi);
     this.mapLo = Math.min(...pitches);
@@ -94,14 +122,14 @@ export class Game {
     }
     const target = n ? sum / n : (this.center ?? (this.mapLo + this.mapHi) / 2);
     this.center = this.center == null ? target : this.center + FOLLOW * (target - this.center);
-    this.lo = this.center - WINDOW_ST / 2;
-    this.hi = this.center + WINDOW_ST / 2;
+    this.lo = this.center - this.windowSt / 2;
+    this.hi = this.center + this.windowSt / 2;
   }
 
   y(midi) {
     const span = this.hi - this.lo;
-    const usable = this.h - PAD_TOP - PAD_BOTTOM;
-    return PAD_TOP + (1 - (midi - this.lo) / span) * usable;
+    const usable = this.h - this.padTop - this.padBottom;
+    return this.padTop + (1 - (midi - this.lo) / span) * usable;
   }
 
   // What matters is the note, not the octave. A voice that cannot reach the
@@ -121,7 +149,7 @@ export class Game {
   }
 
   get semitonePx() {
-    return (this.h - PAD_TOP - PAD_BOTTOM) / (this.hi - this.lo);
+    return (this.h - this.padTop - this.padBottom) / (this.hi - this.lo);
   }
 
 
@@ -184,7 +212,8 @@ export class Game {
   _draw(now, scoreNow) {
     const g = this.ctx, w = this.w, h = this.h;
     if (w <= 0 || h <= 0) { this._resize(); return; }
-    const nowX = w * NOW_X;
+    const nowX = this.nowX;
+    const PPS = this.pps, PAD_TOP = this.padTop, PAD_BOTTOM = this.padBottom;
 
     g.fillStyle = "#050506";
     g.fillRect(0, 0, w, h);
@@ -211,12 +240,13 @@ export class Game {
     }
 
     // the now-line: where a block has to be for you to be singing it
-    const grad = g.createLinearGradient(nowX - 26, 0, nowX + 26, 0);
+    const grad = g.createLinearGradient(nowX - this.ballR * 4, 0, nowX + this.ballR * 4, 0);
     grad.addColorStop(0, "rgba(255,255,255,0)");
     grad.addColorStop(0.5, "rgba(255,255,255,.05)");
     grad.addColorStop(1, "rgba(255,255,255,0)");
     g.fillStyle = grad;
-    g.fillRect(nowX - 26, PAD_TOP - 20, 52, h - PAD_BOTTOM - PAD_TOP + 40);
+    const lane = Math.max(18, this.ballR * 4);
+    g.fillRect(nowX - lane, PAD_TOP - 20, lane * 2, h - PAD_BOTTOM - PAD_TOP + 40);
     g.strokeStyle = "rgba(255,255,255,.22)";
     g.lineWidth = 1.5;
     g.beginPath();
@@ -234,9 +264,10 @@ export class Game {
     const g = this.ctx;
     const barH = Math.max(15, TOL * 2 * this.semitonePx);
     g.textBaseline = "middle";
-    g.font = "600 11px -apple-system, system-ui, sans-serif";
+    g.font = `600 ${this.fontPx}px -apple-system, system-ui, sans-serif`;
 
     for (const n of this.notes) {
+      const PPS = this.pps;
       const x0 = nowX + (n.start - now) * PPS;
       const x1 = nowX + (n.end - now) * PPS;
       if (x1 < -40 || x0 > this.w + 40) continue;
@@ -271,9 +302,9 @@ export class Game {
         g.restore();
       }
 
-      if (width > 30) {
+      if (width > this.fontPx * 2.6) {
         g.fillStyle = "rgba(255,255,255,.82)";
-        g.fillText(n.name.replace(/\d+$/, ""), x0 + 9, yc + 0.5);
+        g.fillText(n.name.replace(/\d+$/, ""), x0 + Math.max(5, this.fontPx * 0.7), yc + 0.5);
       }
     }
   }
@@ -290,10 +321,10 @@ export class Game {
       const f = 1 - (now - b.t) / TRAIL_SEC;   // 1 at the ball, 0 at the tail
       if (f <= 0) continue;
       g.strokeStyle = `rgba(255,255,255,${(0.85 * f * f).toFixed(3)})`;
-      g.lineWidth = 0.8 + 5.2 * f * f;
+      g.lineWidth = (0.8 + 5.2 * f * f) * this.ui;
       g.beginPath();
-      g.moveTo(nowX - (now - a.t) * PPS, this.y(a.m));
-      g.lineTo(nowX - (now - b.t) * PPS, this.y(b.m));
+      g.moveTo(nowX - (now - a.t) * this.pps, this.y(a.m));
+      g.lineTo(nowX - (now - b.t) * this.pps, this.y(b.m));
       g.stroke();
     }
   }
@@ -315,18 +346,20 @@ export class Game {
     if (inTune) {
       g.fillStyle = "rgba(53,208,127,.25)";
       g.beginPath();
-      g.arc(nowX, y, 17, 0, 6.284);
+      g.arc(nowX, y, this.ballR * 2.6, 0, 6.284);
       g.fill();
     }
     g.fillStyle = inTune ? "#35d07f" : "#fff";
     g.beginPath();
-    g.arc(nowX, y, 6.5, 0, 6.284);
+    g.arc(nowX, y, this.ballR, 0, 6.284);
     g.fill();
   }
 
   _drawMinimap(now) {
     const g = this.ctx;
-    const y0 = this.h - 118, hgt = 26, x0 = 24, wid = this.w - 48;
+    const hgt = this.mapH;
+    const y0 = this.h - this.padBottom + Math.max(10, this.padBottom * 0.18);
+    const x0 = this.margin, wid = this.w - this.margin * 2;
     const dur = this.song.durationSeconds;
     const lo = this.mapLo, hi = this.mapHi;
 
