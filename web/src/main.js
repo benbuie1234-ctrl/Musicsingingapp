@@ -79,6 +79,10 @@ async function enterPlayer(entry, map) {
   }
 
   game = new Game($("stage"), map, { get currentTime() { return songTime(); } }, mic);
+  // Internal A/B aid only: ?debugOffset=150 moves blocks 150 ms later without
+  // changing playback or scoring. It is deliberately not a user preference.
+  const visualMs = Number(new URLSearchParams(location.search).get("debugOffset") || 0);
+  if (Number.isFinite(visualMs)) game.visualOffset = Math.max(-0.5, Math.min(0.5, visualMs / 1000));
   game.onScore = (hits, judged) => {
     $("score").textContent = `${judged ? Math.round((hits / judged) * 100) : 0}%`;
     $("score-detail").textContent = `${hits} / ${judged} notes`;
@@ -92,7 +96,7 @@ async function enterPlayer(entry, map) {
 // which only updates around frame rate and drifts against what you hear.
 function songTime() {
   if (!ctx || !startedAt) return 0;
-  return ctx.currentTime - startedAt - (ctx.outputLatency || 0);
+  return ctx.currentTime - startedAt - (ctx.outputLatency || 0) - mic.outputDelayExtra;
 }
 
 async function begin(entry, buffer) {
@@ -104,6 +108,7 @@ async function begin(entry, buffer) {
     return;
   }
   game.micDelay = mic.captureDelay;
+  if (mic.profile.wireless) showAudioStatus("Wireless audio detected · timing adjusted");
 
   source = ctx.createBufferSource();
   source.buffer = buffer;
@@ -114,6 +119,15 @@ async function begin(entry, buffer) {
   startedAt = ctx.currentTime + 0.12;   // a beat of headroom so playback starts clean
   source.start(startedAt);
   game.start();
+}
+
+let audioStatusTimer = null;
+function showAudioStatus(message) {
+  const el = $("audio-status");
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(audioStatusTimer);
+  audioStatusTimer = setTimeout(() => { el.hidden = true; }, 3200);
 }
 
 function finish(entry) {
@@ -144,6 +158,8 @@ function leavePlayer() {
   mic.stop();
   if (ctx) ctx.close();
   ctx = null; source = null; game = null; startedAt = 0;
+  clearTimeout(audioStatusTimer);
+  $("audio-status").hidden = true;
   $("overlay").hidden = true;
   $("player").hidden = true;
   $("dashboard").hidden = false;
@@ -159,6 +175,7 @@ if (new URLSearchParams(location.search).has("debug")) {
     songTime,
     get ctx() { return ctx; },
     get game() { return game; },
+    get audioProfile() { return mic.profile; },
     get startedAt() { return startedAt; },
   };
 }

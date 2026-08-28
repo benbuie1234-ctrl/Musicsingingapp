@@ -7,6 +7,10 @@ const HIT_RATIO = 0.4;    // fraction of a note you must hold to count it
 const MISS_RATIO = 0.2;   // below this the block goes red
 const GRACE = 0.15;       // seconds of timing slack on either side of a note
 const TRAIL_SEC = 0.4;
+const ATTACK_FRAMES = 2;  // reject one-frame pitch flashes when the voice starts
+const RELEASE_SEC = 0.14; // keep/fade the last good pitch across tiny dropouts
+const OUTLIER_ST = 4.0;   // a larger move must persist before the ball follows it
+const OUTLIER_FRAMES = 2;
 const FOLLOW = 0.035;     // how fast the pitch axis chases the melody
 const LOOKAHEAD = 3.0;    // seconds of upcoming melody the axis aims to fit
 
@@ -41,6 +45,16 @@ export class Game {
 
     this.trail = [];
     this.smooth = null;
+    this.scorePitch = null;
+    this.ballAlpha = 0;
+    this.lastPitchAt = -Infinity;
+    this.lastFrameAt = null;
+    this.pitchHistory = [];
+    this.pendingPitch = null;
+    this.pendingFrames = 0;
+    this.hadTrailGap = true;
+    // Debug-only visual experiment. It never changes the audio clock or score.
+    this.visualOffset = 0;
     this.center = null;   // centre of the visible pitch window, in MIDI
     this.hits = 0;
     this.judged = 0;
@@ -142,6 +156,12 @@ export class Game {
   // The target the ball should be measured against right now: the note being
   // sung if there is one, otherwise the middle of the visible window.
   _reference(at) {
+    // Prefer the note whose real span contains this moment. Grace windows can
+    // overlap at a boundary; returning the first match made the ball cling to
+    // the old note just as the melody moved to the new one.
+    for (const n of this.notes) {
+      if (at >= n.start && at <= n.end) return n.midi;
+    }
     for (const n of this.notes) {
       if (at >= n.start - GRACE && at <= n.end + GRACE) return n.midi;
     }
@@ -150,6 +170,64 @@ export class Game {
 
   get semitonePx() {
     return (this.h - this.padTop - this.padBottom) / (this.hi - this.lo);
+  }
+
+  _medianPitch(raw) {
+    this.pitchHistory.push(raw);
+    if (this.pitchHistory.length > 3) this.pitchHistory.shift();
+    const sorted = [...this.pitchHistory].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  _acceptPitch(raw, now, scoreNow) {
+    const reference = this._reference(scoreNow);
+    let folded = Game.fold(this._medianPitch(raw), reference);
+
+    // Of the octave-equivalent positions, keep the one nearest the existing
+    // ball while it is still compatible with the current target. This stops a
+    // boundary/noise frame from flipping the display by twelve semitones.
+    if (this.smooth != null) {
+      const near = folded + 12 * Math.round((this.smooth - folded) / 12);
+      if (Math.abs(near - reference) <= 6) folded = near;
+    }
+
+    const jump = this.smooth == null ? 0 : Math.abs(folded - this.smooth);
+    if (jump > OUTLIER_ST) {
+      if (this.pendingPitch == null || Math.abs(folded - this.pendingPitch) > 1.2) {
+        this.pendingPitch = folded;
+        this.pendingFrames = 1;
+        return false;
+      }
+      this.pendingPitch = (this.pendingPitch + folded) / 2;
+      if (++this.pendingFrames < OUTLIER_FRAMES) return false;
+      folded = this.pendingPitch;
+    } else if (this.smooth == null) {
+      if (this.pendingPitch == null || Math.abs(folded - this.pendingPitch) > 1.2) {
+        this.pendingPitch = folded;
+        this.pendingFrames = 1;
+        return false;
+      }
+      this.pendingPitch = (this.pendingPitch + folded) / 2;
+      if (++this.pendingFrames < ATTACK_FRAMES) return false;
+      folded = this.pendingPitch;
+    }
+
+    this.pendingPitch = null;
+    this.pendingFrames = 0;
+    const dt = this.lastFrameAt == null ? 1 / 60 : clamp(now - this.lastFrameAt, 1 / 240, 0.1);
+    const distance = this.smooth == null ? Infinity : Math.abs(folded - this.smooth);
+    const tau = distance > 1.2 ? 0.035 : 0.095;
+    const alpha = this.smooth == null ? 1 : 1 - Math.exp(-dt / tau);
+    this.smooth = this.smooth == null ? folded : this.smooth + alpha * (folded - this.smooth);
+    // Scoring sees only a pitch confirmed on this frame. The visual ball may
+    // coast briefly through a dropout, but silence never earns pitch credit.
+    this.scorePitch = folded;
+    this.lastPitchAt = now;
+    this.ballAlpha = 1;
+    this.lastFrameAt = now;
+    this.trail.push({ t: now, m: this.smooth, gap: this.hadTrailGap });
+    this.hadTrailGap = false;
+    return true;
   }
 
 
@@ -161,29 +239,34 @@ export class Game {
     const now = this.audio.currentTime;
     const scoreNow = now - this.micDelay;
     const raw = this.mic.read();
+    this.scorePitch = null;
 
+    let accepted = false;
     if (raw != null) {
-      const folded = Game.fold(raw, this._reference(scoreNow));
-      // light smoothing so the ball glides instead of twitching -- but a fold to
-      // a new octave is a jump, not a glide, so don't slur across it
-      this.smooth = (this.smooth == null || Math.abs(folded - this.smooth) > 6)
-        ? folded
-        : this.smooth + 0.35 * (folded - this.smooth);
-      this.trail.push({ t: now, m: this.smooth });
-    } else {
-      this.smooth = null;
-      this.trail.push({ t: now, m: null });
+      accepted = this._acceptPitch(raw, now, scoreNow);
+    }
+    if (!accepted) {
+      this.pitchHistory.length = 0;
+      if (raw == null) {
+        this.pendingPitch = null;
+        this.pendingFrames = 0;
+      }
+      const silentFor = now - this.lastPitchAt;
+      this.ballAlpha = clamp(1 - silentFor / RELEASE_SEC, 0, 1);
+      if (silentFor >= RELEASE_SEC && this.smooth != null) {
+        this.smooth = null;
+        this.hadTrailGap = true;
+      }
     }
     while (this.trail.length && this.trail[0].t < now - TRAIL_SEC) this.trail.shift();
 
-    this._score(scoreNow);
+    this._score(scoreNow, this.scorePitch);
     this._updateWindow(now);
     this._draw(now, scoreNow);
     requestAnimationFrame(this._frame);
   }
 
-  _score(now) {
-    const sung = this.smooth;
+  _score(now, sung) {
     for (const n of this.notes) {
       if (n.done) continue;
       // Credit is given over a slightly wider window than the note itself: a
@@ -245,7 +328,9 @@ export class Game {
     grad.addColorStop(0.5, "rgba(255,255,255,.05)");
     grad.addColorStop(1, "rgba(255,255,255,0)");
     g.fillStyle = grad;
-    const lane = Math.max(18, this.ballR * 4);
+    // The lane is the same width as the timing grace used by scoring, so the
+    // display and the rule now tell the singer the same thing.
+    const lane = Math.max(this.ballR * 3, GRACE * PPS);
     g.fillRect(nowX - lane, PAD_TOP - 20, lane * 2, h - PAD_BOTTOM - PAD_TOP + 40);
     g.strokeStyle = "rgba(255,255,255,.22)";
     g.lineWidth = 1.5;
@@ -254,7 +339,7 @@ export class Game {
     g.lineTo(nowX, h - PAD_BOTTOM + 20);
     g.stroke();
 
-    this._drawNotes(now, nowX);
+    this._drawNotes(now - this.visualOffset, nowX);
     this._drawTrail(now, nowX);
     this._drawBall(nowX, scoreNow);
     this._drawMinimap(now);
@@ -317,7 +402,7 @@ export class Game {
     const pts = this.trail;
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i];
-      if (a.m == null || b.m == null) continue;
+      if (a.m == null || b.m == null || b.gap) continue;
       const f = 1 - (now - b.t) / TRAIL_SEC;   // 1 at the ball, 0 at the tail
       if (f <= 0) continue;
       g.strokeStyle = `rgba(255,255,255,${(0.85 * f * f).toFixed(3)})`;
@@ -331,8 +416,10 @@ export class Game {
 
   _drawBall(nowX, scoreNow) {
     const g = this.ctx;
-    if (this.smooth == null) return;
+    if (this.smooth == null || this.ballAlpha <= 0) return;
     const y = this.y(this.smooth);
+    g.save();
+    g.globalAlpha = this.ballAlpha;
 
     // is the ball currently inside a block?
     let inTune = false;
@@ -353,6 +440,7 @@ export class Game {
     g.beginPath();
     g.arc(nowX, y, this.ballR, 0, 6.284);
     g.fill();
+    g.restore();
   }
 
   _drawMinimap(now) {

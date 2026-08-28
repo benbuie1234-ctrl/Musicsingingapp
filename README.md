@@ -8,21 +8,20 @@ whether you're on pitch — with a score at the end.
 Two halves, deliberately split:
 
 **Offline (Python, run once per song).** Source-separate the vocal out of a mix with
-Demucs, then track the fundamental frequency of that isolated vocal to produce a
-*continuous pitch contour* — a frequency reading roughly every 10 ms, plus a
-voiced/unvoiced flag. That contour is written out as JSON.
+Demucs, track the fundamental frequency of that isolated vocal to produce a
+continuous pitch contour, then segment the contour and syllable onsets into note
+blocks. The contour and blocks are written to one local JSON file.
 
-**Online (browser, no server).** The web app loads the audio plus its JSON contour,
+**Online (browser, no app server).** The web app loads the full mix plus its JSON map,
 captures the mic, runs the same pitch-tracking algorithm live, and draws your pitch
-against the target as a scrolling ribbon. Scoring compares the two curves.
+against scrolling note blocks. Scoring measures how much of each block was held.
 
-### Why a contour and not discrete notes
+### Why retain the contour as well as note blocks
 
-Quantizing an extracted vocal into note rectangles is where this kind of project
-usually falls apart: pitch bends, scoops, vibrato, and stacked harmonies all break
-note segmentation, and the resulting map is wrong often enough to be maddening.
-Comparing curve-to-curve skips segmentation entirely, and treats expressive pitch
-movement as something to match rather than something to fix.
+Pitch bends, scoops, vibrato, repeated syllables, and stacked harmonies make note
+segmentation the fragile part of this kind of project. The original continuous
+contour stays in the map for diagnosis and regeneration; the game uses corrected,
+phrase-tiling note blocks so the target is readable while singing.
 
 ## Layout
 
@@ -89,6 +88,13 @@ That generates a self-signed certificate and prints the address to open on the p
 Accept the certificate warning once and the mic works. Wired headphones are worth it —
 Bluetooth adds 100-300 ms that the browser under-reports.
 
+After microphone permission is granted, the app checks the active track's device label
+and reported capture latency. Recognized wireless headsets (including AirPods, Beats,
+Buds, Bose and Jabra devices) get conservative fallback input and output compensation
+when the browser reports less. This is necessarily a heuristic: the web platform does
+not expose the Bluetooth transport or a measured round-trip latency. `?debug` exposes
+the result as `window.__sing.audioProfile`.
+
 ## Layout
 
 Built mobile first. The display is laid out in **time and semitones**, not pixels: the
@@ -111,6 +117,10 @@ name, the best score, side-by-side cards. It is the same design with more space.
 
 Append `?debug` to the URL to expose `window.__sing` with the song clock, the audio
 context and the live scoring state.
+
+For timing experiments, `?debug&debugOffset=150` draws blocks 150 ms later while
+leaving playback and scoring unchanged. The value is clamped to ±500 ms and exists
+only for measurement; it is intentionally not a user-facing latency control.
 
 ## Audio is not in this repo
 
@@ -174,6 +184,38 @@ and they are used alongside pitch changes to split notes — and to block the me
 from gluing repeated notes back together.
 
 A gap between blocks therefore means one thing: nobody is singing.
+
+### Reviewing and correcting a map
+
+Automatic segmentation produces a reviewable first pass, not an excuse to tune one
+global threshold around every unusual lyric. Ask the segmenter for a compact timestamp
+queue of short notes, large leaps and isolated spikes:
+
+```bash
+python3 extract/segment_notes.py web/public/maps/too-much.json --diagnose
+```
+
+Human corrections live beside the map at
+`web/public/maps/too-much.overrides.json`. Like the third-party map, that file is
+gitignored. It is reapplied automatically every time the map is segmented:
+
+```json
+{
+  "version": 1,
+  "edits": [
+    {"at": 22.12, "midi": 55.1},
+    {"at": 32.15, "start": 32.18, "end": 32.38},
+    {"at": 90.42, "delete": true}
+  ],
+  "add": [
+    {"start": 91.0, "end": 91.2, "midi": 63.0}
+  ]
+}
+```
+
+`at` identifies the generated block containing that timestamp, so corrections remain
+stable when earlier segmentation changes move array indices. Corrected blocks are
+validated for positive duration and overlaps before the map is written.
 
 ## Only the singer
 

@@ -16,8 +16,9 @@ Gaps between blocks therefore mean one thing only: nobody is singing.
 Usage:
     python3 segment_notes.py <contour.json>   # rewrites the file with notes[]
 """
+import argparse
 import json
-import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -36,6 +37,74 @@ NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 def note_name(midi):
     m = int(round(midi))
     return f"{NAMES[m % 12]}{m // 12 - 1}"
+
+
+def apply_overrides(notes, path):
+    """Apply durable, timestamp-addressed human corrections.
+
+    An edit's ``at`` time identifies the generated block that contains it (or
+    the nearest block within 500 ms). This survives small segmentation changes
+    much better than identifying a note by array index.
+    """
+    doc = json.load(open(path))
+    if doc.get("version") != 1:
+        raise ValueError(f"unsupported override version in {path}")
+    out = [dict(n) for n in notes]
+    used = set()
+    for edit in doc.get("edits", []):
+        at = float(edit["at"])
+        candidates = [
+            (0 if n["start"] <= at <= n["end"] else min(abs(at - n["start"]), abs(at - n["end"])), i)
+            for i, n in enumerate(out) if i not in used
+        ]
+        distance, i = min(candidates, default=(float("inf"), -1))
+        if distance > 0.5:
+            raise ValueError(f"override at {at:.3f}s did not match a note within 500 ms")
+        used.add(i)
+        if edit.get("delete"):
+            out[i]["_delete"] = True
+            continue
+        for key in ("start", "end", "midi"):
+            if key in edit:
+                out[i][key] = round(float(edit[key]), 3 if key != "midi" else 2)
+        out[i]["name"] = note_name(out[i]["midi"])
+
+    out = [n for n in out if not n.pop("_delete", False)]
+    for added in doc.get("add", []):
+        n = {key: float(added[key]) for key in ("start", "end", "midi")}
+        n["start"], n["end"] = round(n["start"], 3), round(n["end"], 3)
+        n["midi"] = round(n["midi"], 2)
+        n["name"] = note_name(n["midi"])
+        out.append(n)
+    out.sort(key=lambda n: (n["start"], n["end"]))
+    for i, n in enumerate(out):
+        if n["start"] < 0 or n["end"] <= n["start"]:
+            raise ValueError(f"invalid corrected note at {n['start']:.3f}s")
+        if i and n["start"] < out[i - 1]["end"] - 0.001:
+            raise ValueError(f"corrected notes overlap near {n['start']:.3f}s")
+    return out, len(doc.get("edits", [])), len(doc.get("add", []))
+
+
+def suspicious_notes(notes):
+    """Return a compact review queue without pretending heuristics are edits."""
+    flagged = []
+    for i, n in enumerate(notes):
+        reasons = []
+        dur = n["end"] - n["start"]
+        if dur < 0.115:
+            reasons.append(f"very short ({dur * 1000:.0f} ms)")
+        if i and n["start"] - notes[i - 1]["end"] < 0.001:
+            leap = abs(n["midi"] - notes[i - 1]["midi"])
+            if leap > 9:
+                reasons.append(f"{leap:.1f} st leap from previous")
+        if 0 < i < len(notes) - 1:
+            left = abs(n["midi"] - notes[i - 1]["midi"])
+            right = abs(n["midi"] - notes[i + 1]["midi"])
+            if left > 6 and right > 6 and abs(notes[i - 1]["midi"] - notes[i + 1]["midi"]) < 2:
+                reasons.append("isolated pitch spike")
+        if reasons:
+            flagged.append((i, n, reasons))
+    return flagged
 
 
 def phrases(midi):
@@ -101,7 +170,12 @@ def absorb_short(segs, pitch, min_frames):
 
 
 def main():
-    path = sys.argv[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("map")
+    parser.add_argument("--overrides", help="correction JSON; defaults to <map>.overrides.json when present")
+    parser.add_argument("--diagnose", action="store_true", help="print timestamps worth human review")
+    args = parser.parse_args()
+    path = args.map
     doc = json.load(open(path))
     hop = doc["hopSeconds"]
     midi = doc["midi"]
@@ -179,6 +253,12 @@ def main():
             "name": note_name(n["pitch"]),
         })
 
+    override_path = Path(args.overrides) if args.overrides else Path(path).with_suffix(".overrides.json")
+    if args.overrides and not override_path.exists():
+        raise FileNotFoundError(f"override file not found: {override_path}")
+    if override_path.exists():
+        notes, edited, added = apply_overrides(notes, override_path)
+        print(f"  applied overrides: {edited} edits, {added} additions from {override_path}")
     doc["notes"] = notes
     json.dump(doc, open(path, "w"), separators=(",", ":"))
 
@@ -195,6 +275,11 @@ def main():
     print(f"  coverage  {100*durs.sum()/total:.1f}% of track, {100*durs.sum()/voiced_s:.1f}% of voiced time")
     gaps = np.array([notes[i+1]["start"] - notes[i]["end"] for i in range(len(notes)-1)])
     print(f"  gaps      median {np.median(gaps):.2f}s, {int((gaps<0.001).sum())} of {len(gaps)} are edge-to-edge")
+    if args.diagnose:
+        flagged = suspicious_notes(notes)
+        print(f"  review    {len(flagged)} suspicious notes")
+        for i, n, reasons in flagged:
+            print(f"    #{i:03d} {n['start']:7.3f}-{n['end']:7.3f}s {n['name']:>3}  {'; '.join(reasons)}")
 
 
 if __name__ == "__main__":
