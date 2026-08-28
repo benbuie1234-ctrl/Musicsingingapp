@@ -21,12 +21,13 @@ import sys
 
 import numpy as np
 
-MIN_NOTE_MS = 130       # a segment shorter than this gets absorbed by a neighbour
+MIN_NOTE_MS = 100       # a segment shorter than this gets absorbed by a neighbour
 MIN_PHRASE_MS = 90      # a whole phrase shorter than this is a blip, not a note
 CHANGE_ST = 0.8         # pitch move that starts a new note
 CHANGE_FRAMES = 6       # ...sustained this long (60 ms), so vibrato doesn't split
 MERGE_GAP_MS = 120      # join notes across a gap this short
 MERGE_ST = 0.6          # ...if they're this close in pitch
+MIN_DOMINANCE_DB = -14  # below this the vocal stem is leakage, not the singer
 PLAUSIBLE = (45.0, 84.0)  # A2-C6: outside this is an octave error, not a voice
 
 NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -51,8 +52,14 @@ def phrases(midi):
     return out
 
 
-def split_phrase(pitch):
-    """Boundaries within one phrase, as indices relative to its start."""
+def split_phrase(pitch, onsets_in_phrase):
+    """Boundaries within one phrase, as indices relative to its start.
+
+    Two independent sources. Pitch changes catch a move to a different note;
+    syllable onsets catch a repeated note, which pitch cannot see at all --
+    "LAY-ING IN MY BED" holds one pitch across four syllables and has to come
+    out as four blocks, not one.
+    """
     bounds = [0]
     seg_start = 0
     held = 0
@@ -66,8 +73,9 @@ def split_phrase(pitch):
                 held = 0
         else:
             held = 0
+    bounds.extend(int(o) for o in onsets_in_phrase)
     bounds.append(len(pitch))
-    return bounds
+    return sorted(set(b for b in bounds if 0 <= b <= len(pitch)))
 
 
 def absorb_short(segs, pitch, min_frames):
@@ -98,6 +106,8 @@ def main():
     hop = doc["hopSeconds"]
     midi = doc["midi"]
     arr = np.array([np.nan if x is None else x for x in midi])
+    onsets = np.array(doc.get("onsets", []), dtype=int)
+    dominance = np.array(doc["dominanceDb"]) if "dominanceDb" in doc else None
 
     min_frames = int(MIN_NOTE_MS / 1000 / hop)
     min_phrase = int(MIN_PHRASE_MS / 1000 / hop)
@@ -107,7 +117,8 @@ def main():
         if hi - lo < min_phrase:
             continue
         pitch = arr[lo:hi]
-        bounds = split_phrase(pitch)
+        local = onsets[(onsets > lo) & (onsets < hi)] - lo
+        bounds = split_phrase(pitch, local)
         segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
         segs = absorb_short(segs, pitch, min_frames)
         for a, b in segs:
@@ -119,7 +130,10 @@ def main():
         if merged:
             prev = merged[-1]
             gap_ms = (n["a"] - prev["b"]) * hop * 1000.0
-            if gap_ms <= MERGE_GAP_MS and abs(n["pitch"] - prev["pitch"]) <= MERGE_ST:
+            # never merge across a syllable onset: that is a new note being sung,
+            # even when it lands on exactly the same pitch as the one before
+            spans_onset = bool(((onsets >= prev["b"] - 2) & (onsets <= n["a"] + 2)).any())
+            if not spans_onset and gap_ms <= MERGE_GAP_MS and abs(n["pitch"] - prev["pitch"]) <= MERGE_ST:
                 prev["b"] = n["b"]
                 prev["pitch"] = float(np.nanmedian(arr[prev["a"]:prev["b"]]))
                 continue
@@ -131,21 +145,33 @@ def main():
     # so a note sitting an octave off its neighbours is an artefact, not a leap.
     if len(merged) > 4:
         fixed = 0
-        base = [n["pitch"] for n in merged]
-        for i, n in enumerate(merged):
-            lo, hi = max(0, i - 4), min(len(merged), i + 5)
-            ref = float(np.median([base[k] for k in range(lo, hi) if k != i]))
-            for shift in (12.0, -12.0, 24.0, -24.0):
-                if abs(n["pitch"] - ref) > 7.0 and abs(n["pitch"] + shift - ref) < 4.0:
-                    n["pitch"] += shift
-                    fixed += 1
-                    break
+        # Repeated passes: fixing one note improves the context its neighbours
+        # are judged against, so a cluster of errors unwinds from the outside in.
+        for _ in range(3):
+            base = [n["pitch"] for n in merged]
+            changed = 0
+            for i, n in enumerate(merged):
+                lo, hi = max(0, i - 6), min(len(merged), i + 7)
+                ref = float(np.median([base[k] for k in range(lo, hi) if k != i]))
+                for shift in (12.0, -12.0, 24.0, -24.0):
+                    if abs(n["pitch"] - ref) > 7.0 and abs(n["pitch"] + shift - ref) < 4.5:
+                        n["pitch"] += shift
+                        changed += 1
+                        break
+            fixed += changed
+            if not changed:
+                break
         print(f"  note-level octave fixes: {fixed}")
 
     notes = []
+    dropped_leak = 0
     for n in merged:
         if not (PLAUSIBLE[0] <= n["pitch"] <= PLAUSIBLE[1]):
             continue
+        if dominance is not None:
+            if float(np.median(dominance[n["a"]:max(n["a"] + 1, n["b"])])) < MIN_DOMINANCE_DB:
+                dropped_leak += 1
+                continue
         notes.append({
             "start": round(n["a"] * hop, 3),
             "end": round(n["b"] * hop, 3),
@@ -161,6 +187,8 @@ def main():
     total = doc["durationSeconds"]
     # how much of the sung material ends up inside a block?
     voiced_s = sum(1 for m in midi if m is not None) * hop
+    if dominance is not None:
+        print(f"  dropped as leakage (not the singer): {dropped_leak}")
     print(f"{len(raw)} segments -> {len(merged)} merged -> {len(notes)} notes")
     print(f"  duration  median {np.median(durs):.2f}s  p10 {np.percentile(durs,10):.2f}s  p90 {np.percentile(durs,90):.2f}s  max {durs.max():.2f}s")
     print(f"  pitch     {pitches.min():.1f}-{pitches.max():.1f} ({note_name(pitches.min())}-{note_name(pitches.max())})")

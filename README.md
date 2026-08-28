@@ -50,9 +50,13 @@ Three steps, all offline and one-time per track:
 python3 -m demucs --two-stems=vocals -d mps -o separated "your-song.m4a"
 cd extract
 python3 extract_contour.py "../separated/htdemucs/your-song/vocals.wav" \
-    "../web/public/maps/your-song.json" --title "Title" --artist "Artist"
+    "../web/public/maps/your-song.json" --title "Title" --artist "Artist" \
+    --accompaniment "../separated/htdemucs/your-song/no_vocals.wav"
 python3 segment_notes.py "../web/public/maps/your-song.json"
 ```
+
+Passing `--accompaniment` is optional but strongly recommended — see *Only the singer*
+below.
 
 Then put the **full mix** at `web/audio/<id>.m4a` and add an entry to `web/songs.json`
 with a matching `id`. Separation takes about 20 seconds for a 3-minute track on Apple
@@ -126,7 +130,27 @@ excluded from the score rather than counted as misses.
 Blocks tile each sung phrase: within a phrase they meet edge to edge, so a block ends
 exactly where the singer moves to the next note. Segments that come out too short are
 absorbed into whichever neighbour is closer in pitch, never dropped — dropping them
-punched holes in the middle of phrases, where the singer is plainly still singing but
-nothing was being asked of them.
+punched holes mid-phrase, where the singer is plainly still singing but nothing was
+being asked of them.
 
-A gap between blocks therefore means one thing only: nobody is singing.
+**One block per note sung, including repeats.** Pitch alone cannot find the boundary
+when a singer repeats the same note across syllables: "LAY-ING IN MY BED" is one flat
+line to a pitch tracker and would come out as a single long block. Each syllable does
+restart the vocal's energy, so `onsets.py` finds those boundaries with spectral flux,
+and they are used alongside pitch changes to split notes — and to block the merge step
+from gluing repeated notes back together.
+
+A gap between blocks therefore means one thing: nobody is singing.
+
+## Only the singer
+
+Separation leaves residue, and residue is what puts note blocks on top of instruments.
+The fix uses the other half of what Demucs already produced: comparing the vocal stem
+against `no_vocals.wav` frame by frame gives a per-note measure of how far the voice
+stands above the backing. A lead vocal is mixed loud and sits near or above the
+accompaniment; leakage sits far below it. Notes whose median falls under -14 dB are
+discarded.
+
+On this track that removes 74 notes, and clears the instrumental stretches outright.
+The threshold is deliberately not tighter: tightening to -8 dB would drop another 86
+notes that are genuinely sung.

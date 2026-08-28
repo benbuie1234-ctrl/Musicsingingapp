@@ -16,6 +16,7 @@ import sys
 import numpy as np
 
 from audio_io import load_mono
+from onsets import detect as detect_onsets
 from yin import track
 
 SR = 44100
@@ -93,6 +94,9 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--title", default="")
     ap.add_argument("--artist", default="")
+    ap.add_argument("--accompaniment", default="",
+                    help="the no_vocals stem; lets notes be checked for actually "
+                         "being the singer rather than leakage")
     args = ap.parse_args()
 
     print(f"loading {args.stem}")
@@ -135,6 +139,30 @@ def main():
         print(f"  range p2-p98: MIDI {lo:.1f}-{hi:.1f}  median {np.median(sung):.1f}")
         print(f"  median frame-to-frame move: {np.median(np.abs(np.diff(sung))):.3f} st")
 
+    print("finding syllable onsets")
+    onsets = detect_onsets(x, sr, HOP)
+    print(f"  {len(onsets)} onsets ({len(onsets)/(len(x)/sr):.2f}/s)")
+
+    # How far the vocal stem stands above the rest of the mix, frame by frame.
+    # Separation leaves residue behind, and residue is what puts note blocks on
+    # top of instruments; the singer is mixed loud, so real singing sits near or
+    # above the accompaniment while leakage sits far below it.
+    dominance = None
+    if args.accompaniment:
+        print(f"comparing against {args.accompaniment}")
+        acc, _ = load_mono(args.accompaniment, SR)
+        m = min(len(acc), len(x))
+        frames = len(midi)
+        ea = np.array([np.sqrt((acc[i*HOP:(i+1)*HOP] ** 2).mean()) if (i+1)*HOP <= m else 1e-9
+                       for i in range(frames)])
+        ev = np.array([np.sqrt((x[i*HOP:(i+1)*HOP] ** 2).mean()) if (i+1)*HOP <= m else 1e-9
+                       for i in range(frames)])
+        dominance = 20.0 * np.log10((ev + 1e-9) / (ea + 1e-9))
+        inside = dominance[voiced]
+        if len(inside):
+            print(f"  vocal-vs-accompaniment over voiced frames: "
+                  f"median {np.median(inside):+.1f} dB, p10 {np.percentile(inside,10):+.1f} dB")
+
     payload = {
         "version": 1,
         "title": args.title,
@@ -145,7 +173,10 @@ def main():
         # null marks unvoiced: no lead vocal to match at that instant
         "midi": [round(float(m), 2) if v else None for m, v in zip(midi, voiced)],
         "levelDb": [round(float(r), 1) for r in rel],
+        "onsets": [int(i) for i in onsets],
     }
+    if dominance is not None:
+        payload["dominanceDb"] = [round(float(v), 1) for v in dominance]
     with open(args.out, "w") as fh:
         json.dump(payload, fh, separators=(",", ":"))
     print(f"wrote {args.out}")
