@@ -72,18 +72,6 @@ button.ghost:hover { color: var(--text); background: none; }
 .hud-best { flex: 1; text-align: right; color: var(--dim); font-size: 13px; }
 .hud-best b { color: var(--text); font-size: 17px; }
 
-.tuning {
-  position: absolute; bottom: 18px; left: 24px;
-  display: flex; gap: 22px; align-items: center;
-  color: var(--dim); font-size: 12px;
-  background: rgba(12,12,16,.72); padding: 10px 16px; border-radius: 12px;
-  border: 1px solid var(--line); backdrop-filter: blur(8px);
-}
-.tuning label { display: flex; align-items: center; gap: 8px; }
-.tuning input[type=range] { width: 110px; accent-color: var(--text); }
-.tuning output { min-width: 46px; color: var(--text); }
-.tuning .check { gap: 6px; }
-
 .overlay {
   position: absolute; inset: 0; display: grid; place-items: center;
   background: rgba(5,5,6,.82); backdrop-filter: blur(6px);

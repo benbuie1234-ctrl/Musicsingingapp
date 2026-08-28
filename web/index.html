@@ -11,12 +11,9 @@
 <main id="dashboard">
   <header class="top">
     <h1>Sing</h1>
-    <p class="sub">Pick a song, then sing it. Headphones required.</p>
+    <p class="sub">Pick a song and sing it. Headphones required.</p>
   </header>
   <section id="songs" class="songs"></section>
-  <footer class="foot">
-    <span id="mic-state">Microphone not yet enabled</span>
-  </footer>
 </main>
 
 <main id="player" hidden>
@@ -29,21 +26,7 @@
     <div class="hud-best">Best <b id="best">--</b></div>
   </div>
 
-  <div class="tuning">
-    <label>Latency
-      <input id="latency" type="range" min="-300" max="300" step="5" value="0">
-      <output id="latency-out">0 ms</output>
-    </label>
-    <label>Transpose
-      <input id="transpose" type="range" min="-12" max="12" step="1" value="0">
-      <output id="transpose-out">0</output>
-    </label>
-    <label class="check">
-      <input id="octave" type="checkbox"> Ignore octave
-    </label>
-  </div>
-
-  <div id="overlay" class="overlay">
+  <div id="overlay" class="overlay" hidden>
     <div class="card">
       <h2 id="ov-title">Ready</h2>
       <p id="ov-body"></p>

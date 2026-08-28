@@ -22,9 +22,10 @@ export class Game {
     this.audio = audio;
     this.mic = mic;
 
-    this.latency = 0;      // seconds
-    this.transpose = 0;    // semitones
-    this.ignoreOctave = false;
+    // How far behind real time the mic reading is. Set from the audio stack's
+    // own reported latency -- there is no slider, because there is nothing here
+    // a listener could tune by ear better than the browser can report.
+    this.micDelay = 0;
 
     this.notes = song.notes.map((n) => ({
       ...n, hit: 0, passed: 0, done: false, scored: false,
@@ -86,7 +87,7 @@ export class Game {
     let sum = 0, n = 0;
     for (const note of this.notes) {
       if (note.end > now - 1 && note.start < now + LOOKAHEAD) {
-        sum += note.midi + this.transpose;
+        sum += note.midi;
         n++;
       }
     }
@@ -106,16 +107,14 @@ export class Game {
     return (this.h - PAD_TOP - PAD_BOTTOM) / (this.hi - this.lo);
   }
 
-  // Signed distance from sung pitch to target, honouring the octave setting.
-  _delta(sung, target) {
-    let d = sung - target;
-    if (this.ignoreOctave) d -= 12 * Math.round(d / 12);
-    return d;
-  }
 
   _frame() {
     if (!this.running) return;
-    const now = this.audio.currentTime - this.latency;
+    // `now` is the moment of the song currently reaching the listener's ears.
+    // The mic reading in hand is older than that, so scoring looks slightly
+    // further back than the display does.
+    const now = this.audio.currentTime;
+    const scoreNow = now - this.micDelay;
     const raw = this.mic.read();
 
     if (raw != null) {
@@ -128,9 +127,9 @@ export class Game {
     }
     while (this.trail.length && this.trail[0].t < now - TRAIL_SEC) this.trail.shift();
 
-    this._score(now);
+    this._score(scoreNow);
     this._updateWindow(now);
-    this._draw(now);
+    this._draw(now, scoreNow);
     requestAnimationFrame(this._frame);
   }
 
@@ -140,10 +139,7 @@ export class Game {
       if (n.done) continue;
       if (now >= n.start && now <= n.end) {
         n.passed++;
-        if (sung != null) {
-          const target = n.midi + this.transpose;
-          if (Math.abs(this._delta(sung, target)) <= TOL) n.hit++;
-        }
+        if (sung != null && Math.abs(sung - n.midi) <= TOL) n.hit++;
       } else if (now > n.end) {
         n.done = true;
         n.ratio = n.passed ? n.hit / n.passed : 0;
@@ -160,7 +156,7 @@ export class Game {
     }
   }
 
-  _draw(now) {
+  _draw(now, scoreNow) {
     const g = this.ctx, w = this.w, h = this.h;
     if (w <= 0 || h <= 0) { this._resize(); return; }
     const nowX = w * NOW_X;
@@ -205,7 +201,7 @@ export class Game {
 
     this._drawNotes(now, nowX);
     this._drawTrail(now, nowX);
-    this._drawBall(nowX);
+    this._drawBall(nowX, scoreNow);
     this._drawMinimap(now);
   }
 
@@ -220,7 +216,7 @@ export class Game {
       const x1 = nowX + (n.end - now) * PPS;
       if (x1 < -40 || x0 > this.w + 40) continue;
 
-      const yc = this.y(n.midi + this.transpose);
+      const yc = this.y(n.midi);
       const top = yc - barH / 2;
       const width = Math.max(6, x1 - x0);
       const ratio = n.passed ? n.hit / n.passed : 0;
@@ -274,17 +270,16 @@ export class Game {
     g.stroke();
   }
 
-  _drawBall(nowX) {
+  _drawBall(nowX, scoreNow) {
     const g = this.ctx;
     if (this.smooth == null) return;
     const y = this.y(this.smooth);
 
     // is the ball currently inside a block?
     let inTune = false;
-    const now = this.audio.currentTime - this.latency;
     for (const n of this.notes) {
-      if (now >= n.start && now <= n.end) {
-        if (Math.abs(this._delta(this.smooth, n.midi + this.transpose)) <= TOL) inTune = true;
+      if (scoreNow >= n.start && scoreNow <= n.end) {
+        if (Math.abs(this.smooth - n.midi) <= TOL) inTune = true;
         break;
       }
     }

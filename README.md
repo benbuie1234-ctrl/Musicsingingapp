@@ -54,8 +54,12 @@ python3 extract_contour.py "../separated/htdemucs/your-song/vocals.wav" \
 python3 segment_notes.py "../web/public/maps/your-song.json"
 ```
 
-Then add an entry to `web/songs.json` with a matching `id`. Separation takes about
-20 seconds for a 3-minute track on Apple silicon (use `-d cpu` if MPS is unavailable).
+Then put the **full mix** at `web/audio/<id>.m4a` and add an entry to `web/songs.json`
+with a matching `id`. Separation takes about 20 seconds for a 3-minute track on Apple
+silicon (use `-d cpu` if MPS is unavailable).
+
+The two halves come from different audio on purpose: you hear the full commercial mix,
+while the notes you are asked to hit come from the separated vocal alone.
 
 ## Running locally
 
@@ -65,22 +69,44 @@ Mic access requires a secure origin, so `file://` will not work.
 python3 serve.py
 ```
 
-Then open <http://localhost:8000>, pick the audio file once — it is cached in the
-browser, since audio is not in the repo — and sing. **Use headphones**, otherwise the
-mic hears the backing track and scores the song against itself.
+Then open <http://localhost:8000> and press Sing. **Use headphones**, otherwise the mic
+hears the backing track and scores the song against itself.
+
+Append `?debug` to the URL to expose `window.__sing` with the song clock, the audio
+context and the live scoring state.
+
+## Audio is not in this repo
+
+`.gitignore` excludes `web/audio/` along with every other audio path, and the generated
+contour JSON too. A contour is a machine-readable transcription of a copyrighted
+melody, nearer to sheet music than to analysis, and this repo is public.
+
+This means a Cloudflare Pages deploy gets the app but not the song. Fine for tracks you
+own the rights to; for anything else the app is a local tool.
+
+## Sync
+
+The target notes have to line up with what you hear, so each link in the chain was
+measured rather than assumed:
+
+- **Decode alignment.** The track's container declares a 2112-sample start offset — the
+  standard AAC encoder delay. If ffmpeg and the browser disagreed about trimming it,
+  every block would sit ~48 ms out. Cross-correlating the two decodes' energy envelopes
+  puts the peak at lag 0 with r = 0.996.
+- **Playback clock.** Position comes from the Web Audio clock, not an `<audio>`
+  element's `currentTime`, which only updates near frame rate and drifts. Measured
+  drift is about 1 ms over 3 seconds.
+- **Output latency** is subtracted, so the display follows what reaches your ears
+  rather than what was submitted to the sound card.
+- **Capture latency** is subtracted separately when scoring, since the mic reading in
+  hand is always slightly older than the moment being drawn.
 
 ## How scoring works
 
 A note counts as hit if you held it within 0.7 semitones for at least half its length.
 That tolerance is exactly the on-screen thickness of the block, so the rule is simply:
-if the ball is inside the block, you are in tune.
+if the ball is inside the block, you are in tune. The score is the percentage of notes
+hit.
 
-Notes that pass without ever being observed — a hidden tab, a seek, a frame-rate
-collapse — are excluded from the score rather than counted as misses.
-
-Two controls matter and are easy to overlook:
-
-- **Latency** — mic capture and playback each add delay, so your pitch reads late. The
-  slider is seeded from what the browser reports about itself, then saved.
-- **Transpose** / **Ignore octave** — this song's hook sits high. Shift the target into
-  your range rather than being told you are wrong while singing it correctly.
+Notes that pass without ever being observed — a hidden tab, a frame-rate collapse — are
+excluded from the score rather than counted as misses.
