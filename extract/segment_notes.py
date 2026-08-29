@@ -26,6 +26,8 @@ MIN_NOTE_MS = 100       # a segment shorter than this gets absorbed by a neighbo
 MIN_PHRASE_MS = 90      # a whole phrase shorter than this is a blip, not a note
 CHANGE_ST = 0.8         # pitch move that starts a new note
 CHANGE_FRAMES = 6       # ...sustained this long (60 ms), so vibrato doesn't split
+PLATEAU_ST = 1.0        # a note must hold its pitch this tightly, peak to peak
+TRANSITION_MS = 90      # unstable stretches shorter than this are absorbed
 MERGE_GAP_MS = 120      # join notes across a gap this short
 MERGE_ST = 0.6          # ...if they're this close in pitch
 MIN_DOMINANCE_DB = -14  # below this the vocal stem is leakage, not the singer
@@ -163,6 +165,39 @@ def split_phrase(pitch, onsets_in_phrase):
     return sorted(set(b for b in bounds if 0 <= b <= len(pitch)))
 
 
+def plateaus(pitch, lo, hi, min_frames):
+    """Split [lo, hi) into stretches that actually hold a pitch.
+
+    A sung note is a plateau: the pitch settles and stays. Cutting only at
+    change-points instead let a single label cover a span the voice was still
+    moving through -- three quarters of notes drifted past a semitone and the
+    worst quarter wandered nearly six, so the pitch written on the block was
+    a median of a scoop rather than a note anyone sang.
+
+    Unstable stretches between plateaus are transitions, and are returned so
+    the caller can decide whether to absorb or discard them.
+    """
+    out = []
+    i = lo
+    while i < hi:
+        j = i + 1
+        lo_p = hi_p = pitch[i]
+        while j < hi:
+            v = pitch[j]
+            if not np.isfinite(v):
+                break
+            if max(hi_p, v) - min(lo_p, v) > PLATEAU_ST:
+                break
+            lo_p = min(lo_p, v)
+            hi_p = max(hi_p, v)
+            j += 1
+        if j - i >= min_frames:
+            out.append((i, j))
+            i = j
+        else:
+            # not stable long enough to be a note: step past one frame and retry
+            i += 1
+    return out
 def absorb_short(segs, pitch, min_frames):
     """Merge sub-minimum segments into their nearest-in-pitch neighbour."""
     while len(segs) > 1:
@@ -203,16 +238,22 @@ def main():
     min_phrase = int(MIN_PHRASE_MS / 1000 / hop)
 
     raw = []
+    transitions = 0
     for lo, hi in phrases(midi):
         if hi - lo < min_phrase:
             continue
         pitch = arr[lo:hi]
-        local = onsets[(onsets > lo) & (onsets < hi)] - lo
-        bounds = split_phrase(pitch, local)
-        segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
-        segs = absorb_short(segs, pitch, min_frames)
-        for a, b in segs:
-            raw.append({"a": lo + a, "b": lo + b, "pitch": float(np.median(arr[lo + a:lo + b]))})
+        # syllable onsets are hard cuts; a new syllable is a new note even on
+        # the same pitch, so plateaus are never grown across one
+        cuts = [lo] + sorted(int(o) for o in onsets[(onsets > lo) & (onsets < hi)]) + [hi]
+        covered = 0
+        for a, b in zip(cuts, cuts[1:]):
+            if b - a < 2:
+                continue
+            for pa, pb in plateaus(arr, a, b, min_frames):
+                raw.append({"a": pa, "b": pb, "pitch": float(np.nanmedian(arr[pa:pb]))})
+                covered += pb - pa
+        transitions += (hi - lo) - covered
 
     # join notes split by a brief dropout, covering the gap so the block is whole
     merged = []
@@ -306,6 +347,7 @@ def main():
     voiced_s = sum(1 for m in midi if m is not None) * hop
     if dominance is not None:
         print(f"  dropped as leakage (not the singer): {dropped_leak}")
+    print(f"  dropped as transition/unstable: {transitions * hop:.0f}s")
     print(f"{len(raw)} segments -> {len(merged)} merged -> {len(notes)} notes")
     print(f"  duration  median {np.median(durs):.2f}s  p10 {np.percentile(durs,10):.2f}s  p90 {np.percentile(durs,90):.2f}s  max {durs.max():.2f}s")
     print(f"  pitch     {pitches.min():.1f}-{pitches.max():.1f} ({note_name(pitches.min())}-{note_name(pitches.max())})")
