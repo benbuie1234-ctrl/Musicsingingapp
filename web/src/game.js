@@ -373,6 +373,17 @@ export class Game {
     g.fillStyle = floor;
     g.fillRect(0, h * .58, w, h * .42);
 
+    // The strike line: without it there is nothing telling you WHERE a block has
+    // to be before you sing it. Faint, full height, and drawn under the blocks
+    // so it never competes with them.
+    const line = g.createLinearGradient(0, 0, 0, h);
+    line.addColorStop(0, "rgba(255,255,255,.03)");
+    line.addColorStop(0.18, "rgba(255,255,255,.30)");
+    line.addColorStop(0.82, "rgba(255,255,255,.30)");
+    line.addColorStop(1, "rgba(255,255,255,.03)");
+    g.fillStyle = line;
+    g.fillRect(nowX - 0.75, 0, 1.5, h);
+
     this._drawNotes(visualNow, nowX);
     this._drawTrail(now, nowX);
     this._drawBall(nowX, scoreNow);
