@@ -1,16 +1,16 @@
 // The scrolling pitch display: note blocks travel right-to-left past a fixed
 // "now" line, and a ball rides at the height of whatever you are singing.
-import { midiToName } from "./yin.js";
-
-const TOL = 0.7;          // semitones; also the half-height of a note block
-const HIT_RATIO = 0.4;    // fraction of a note you must hold to count it
+const TOL = 0.5;          // semitones: closer to this note than its neighbour
+const PERFECT_TOL = 0.2;  // tightly centred, but never required to pass
+const HIT_RATIO = 0.5;    // hold at least half of the note to count it
 const MISS_RATIO = 0.2;   // below this the block goes red
 const GRACE = 0.15;       // seconds of timing slack on either side of a note
 const TRAIL_SEC = 0.4;
 const ATTACK_FRAMES = 2;  // reject one-frame pitch flashes when the voice starts
-const RELEASE_SEC = 0.14; // keep/fade the last good pitch across tiny dropouts
-const OUTLIER_ST = 4.0;   // a larger move must persist before the ball follows it
-const OUTLIER_FRAMES = 2;
+const RELEASE_SEC = 0.22; // keep/fade the last good pitch across tiny dropouts
+const OUTLIER_ST = 3.5;   // a larger move must persist before the ball follows it
+const OUTLIER_FRAMES = 3;
+const GUIDANCE_DELAY = GRACE; // blocks arrive at the far edge of the strike zone
 const FOLLOW = 0.035;     // how fast the pitch axis chases the melody
 const LOOKAHEAD = 3.0;    // seconds of upcoming melody the axis aims to fit
 
@@ -21,6 +21,7 @@ const LOOKAHEAD = 3.0;    // seconds of upcoming melody the axis aims to fit
 const SEE_AHEAD_SEC = 3.2;   // how much of the coming melody stays on screen
 const MIN_SEMITONE_PX = 16;  // below this a block is too thin to aim at
 const MAX_WINDOW_ST = 17;    // semitones visible at once, at most
+const BEATS_PER_BAR = 4;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -38,7 +39,7 @@ export class Game {
     this.micDelay = 0;
 
     this.notes = song.notes.map((n) => ({
-      ...n, hit: 0, passed: 0, done: false, scored: false,
+      ...n, hit: 0, perfect: 0, passed: 0, done: false, scored: false, hitRanges: [],
     }));
     this.contour = song.midi;
     this.hop = song.hopSeconds;
@@ -54,10 +55,13 @@ export class Game {
     this.pendingFrames = 0;
     this.hadTrailGap = true;
     // Debug-only visual experiment. It never changes the audio clock or score.
-    this.visualOffset = 0;
+    this.visualOffset = GUIDANCE_DELAY;
     this.center = null;   // centre of the visible pitch window, in MIDI
     this.hits = 0;
     this.judged = 0;
+    this.points = 0;
+    this.streak = 0;
+    this.maxStreak = 0;
     this.stars = null;
     this.running = false;
     this.onScore = () => {};
@@ -85,7 +89,7 @@ export class Game {
     this.windowSt = clamp(usable / MIN_SEMITONE_PX, 8, MAX_WINDOW_ST);
 
     this.margin = clamp(w * 0.035, 10, 26);
-    this.mapH = clamp(h * 0.032, 14, 26);
+    this.mapH = clamp(h * 0.065, 30, 58);
     this.fontPx = Math.round(clamp(11 * this.ui, 9, 14));
     this.ballR = clamp(6.5 * this.ui, 5, 9);
   }
@@ -113,8 +117,9 @@ export class Game {
 
     // a fixed starfield, so the background doesn't shimmer between frames
     const rng = mulberry(20240828);
-    this.stars = Array.from({ length: 90 }, () => ({
-      x: rng() * w, y: rng() * h, r: 0.6 + rng() * 1.5, a: 0.05 + rng() * 0.22,
+    this.stars = Array.from({ length: 72 }, () => ({
+      x: rng() * w, y: rng() * h, r: 0.7 + rng() * 1.8,
+      a: 0.06 + rng() * 0.24, speed: 2 + rng() * 8,
     }));
   }
 
@@ -168,6 +173,13 @@ export class Game {
     return this.center != null ? this.center : (this.mapLo + this.mapHi) / 2;
   }
 
+  _activeNote(at) {
+    for (const n of this.notes) {
+      if (at >= n.start && at <= n.end) return n;
+    }
+    return null;
+  }
+
   get semitonePx() {
     return (this.h - this.padTop - this.padBottom) / (this.hi - this.lo);
   }
@@ -180,7 +192,8 @@ export class Game {
   }
 
   _acceptPitch(raw, now, scoreNow) {
-    const reference = this._reference(scoreNow);
+    const active = this._activeNote(scoreNow);
+    const reference = active?.midi ?? this._reference(scoreNow);
     let folded = Game.fold(this._medianPitch(raw), reference);
 
     // Of the octave-equivalent positions, keep the one nearest the existing
@@ -214,14 +227,19 @@ export class Game {
 
     this.pendingPitch = null;
     this.pendingFrames = 0;
+    // Once the singer is already inside a target, visually damp its tiny YIN
+    // fluctuations toward the block centre. This is display-only: scoring uses
+    // the untouched reading from this frame.
+    let displayPitch = folded;
+    if (active && Math.abs(folded - active.midi) <= TOL) {
+      displayPitch = active.midi + (folded - active.midi) * 0.28;
+    }
+
     const dt = this.lastFrameAt == null ? 1 / 60 : clamp(now - this.lastFrameAt, 1 / 240, 0.1);
-    const distance = this.smooth == null ? Infinity : Math.abs(folded - this.smooth);
+    const distance = this.smooth == null ? Infinity : Math.abs(displayPitch - this.smooth);
     const tau = distance > 1.2 ? 0.035 : 0.095;
     const alpha = this.smooth == null ? 1 : 1 - Math.exp(-dt / tau);
-    this.smooth = this.smooth == null ? folded : this.smooth + alpha * (folded - this.smooth);
-    // Scoring sees only a pitch confirmed on this frame. The visual ball may
-    // coast briefly through a dropout, but silence never earns pitch credit.
-    this.scorePitch = folded;
+    this.smooth = this.smooth == null ? displayPitch : this.smooth + alpha * (displayPitch - this.smooth);
     this.lastPitchAt = now;
     this.ballAlpha = 1;
     this.lastFrameAt = now;
@@ -243,6 +261,9 @@ export class Game {
 
     let accepted = false;
     if (raw != null) {
+      // Visual filtering must never make the scoring algorithm more lenient or
+      // cost a fast note. _score folds this original reading per target note.
+      this.scorePitch = raw;
       accepted = this._acceptPitch(raw, now, scoreNow);
     }
     if (!accepted) {
@@ -275,7 +296,17 @@ export class Game {
       // the denominator, so the ratio is clamped rather than inflated.
       if (now >= n.start - GRACE && now <= n.end + GRACE) {
         if (now >= n.start && now <= n.end) n.passed++;
-        if (sung != null && Math.abs(Game.fold(sung, n.midi) - n.midi) <= TOL) n.hit++;
+        if (sung != null) {
+          const error = Math.abs(Game.fold(sung, n.midi) - n.midi);
+          if (error <= TOL) {
+            n.hit++;
+            const t = clamp(now, n.start, n.end);
+            const last = n.hitRanges[n.hitRanges.length - 1];
+            if (last && t - last[1] < 0.06) last[1] = t;
+            else n.hitRanges.push([t, t]);
+          }
+          if (error <= PERFECT_TOL) n.perfect++;
+        }
       } else if (now > n.end + GRACE) {
         n.done = true;
         n.ratio = n.passed ? Math.min(1, n.hit / n.passed) : 0;
@@ -285,11 +316,33 @@ export class Game {
         if (!n.scored && n.passed > 0) {
           n.scored = true;
           this.judged++;
-          if (n.ratio >= HIT_RATIO) this.hits++;
-          this.onScore(this.hits, this.judged);
+          if (n.ratio >= HIT_RATIO) {
+            this.hits++;
+            this.streak++;
+            this.maxStreak = Math.max(this.maxStreak, this.streak);
+            const precision = n.passed ? n.perfect / n.passed : 0;
+            n.grade = precision >= 0.55 && n.ratio >= 0.75 ? "perfect" : "good";
+            this.points += 100 + Math.min(4, this.streak - 1) * 25 + (n.grade === "perfect" ? 50 : 0);
+          } else {
+            n.grade = "miss";
+            this.streak = 0;
+          }
+          this.onScore(this.scoreState);
         }
       }
     }
+  }
+
+  get percent() {
+    return this.judged ? Math.round(this.hits / this.judged * 100) : 0;
+  }
+
+  get scoreState() {
+    return {
+      hits: this.hits, judged: this.judged, points: this.points,
+      streak: this.streak, maxStreak: this.maxStreak,
+      percent: this.judged ? Math.round(this.hits / this.judged * 100) : 0,
+    };
   }
 
   _draw(now, scoreNow) {
@@ -301,53 +354,73 @@ export class Game {
     g.fillStyle = "#050506";
     g.fillRect(0, 0, w, h);
 
+    const visualNow = now - this.visualOffset;
+    this._drawBeatGrid(visualNow, nowX);
+
     for (const s of this.stars) {
       g.globalAlpha = s.a;
       g.fillStyle = "#fff";
       g.beginPath();
-      g.arc(s.x, s.y, s.r, 0, 6.284);
+      const sx = ((s.x - now * s.speed) % w + w) % w;
+      g.arc(sx, s.y, s.r, 0, 6.284);
       g.fill();
     }
     g.globalAlpha = 1;
 
-    // vertical time grid, one line per second, scrolling with the music
-    g.strokeStyle = "rgba(255,255,255,.05)";
-    g.lineWidth = 1;
-    const first = Math.ceil(now - nowX / PPS);
-    for (let t = first; t < now + (w - nowX) / PPS; t++) {
-      const x = nowX + (t - now) * PPS;
-      g.beginPath();
-      g.moveTo(x, PAD_TOP - 20);
-      g.lineTo(x, h - PAD_BOTTOM + 20);
-      g.stroke();
-    }
+    const floor = g.createLinearGradient(0, h * .58, 0, h - PAD_BOTTOM + 20);
+    floor.addColorStop(0, "rgba(5,5,6,0)");
+    floor.addColorStop(1, "rgba(5,5,6,.72)");
+    g.fillStyle = floor;
+    g.fillRect(0, h * .58, w, h * .42);
 
-    // the now-line: where a block has to be for you to be singing it
-    const grad = g.createLinearGradient(nowX - this.ballR * 4, 0, nowX + this.ballR * 4, 0);
-    grad.addColorStop(0, "rgba(255,255,255,0)");
-    grad.addColorStop(0.5, "rgba(255,255,255,.05)");
-    grad.addColorStop(1, "rgba(255,255,255,0)");
-    g.fillStyle = grad;
-    // The lane is the same width as the timing grace used by scoring, so the
-    // display and the rule now tell the singer the same thing.
-    const lane = Math.max(this.ballR * 3, GRACE * PPS);
-    g.fillRect(nowX - lane, PAD_TOP - 20, lane * 2, h - PAD_BOTTOM - PAD_TOP + 40);
-    g.strokeStyle = "rgba(255,255,255,.22)";
-    g.lineWidth = 1.5;
-    g.beginPath();
-    g.moveTo(nowX, PAD_TOP - 20);
-    g.lineTo(nowX, h - PAD_BOTTOM + 20);
-    g.stroke();
-
-    this._drawNotes(now - this.visualOffset, nowX);
+    this._drawNotes(visualNow, nowX);
     this._drawTrail(now, nowX);
     this._drawBall(nowX, scoreNow);
     this._drawMinimap(now);
   }
 
+  _drawBeatGrid(now, nowX) {
+    const g = this.ctx, beats = this.song.beatSeconds || [];
+    const top = this.padTop - 24, bottom = this.h - this.padBottom + 22;
+    const visibleStart = now - nowX / this.pps;
+    const visibleEnd = now + (this.w - nowX) / this.pps;
+    if (beats.length > 8) {
+      for (let i = 0; i < beats.length; i++) {
+        const t = beats[i];
+        if (t < visibleStart - 2 || t > visibleEnd + 2) continue;
+        const x = nowX + (t - now) * this.pps;
+        if (i % BEATS_PER_BAR === 0) {
+          const end = beats[Math.min(i + BEATS_PER_BAR, beats.length - 1)];
+          const x1 = nowX + (end - now) * this.pps;
+          if ((Math.floor(i / BEATS_PER_BAR) & 1) === 0) {
+            const shade = g.createLinearGradient(0, top, 0, bottom);
+            shade.addColorStop(0, "rgba(255,255,255,.105)");
+            shade.addColorStop(1, "rgba(255,255,255,.025)");
+            g.fillStyle = shade;
+            g.fillRect(x, top, x1 - x, bottom - top);
+          }
+        }
+        g.strokeStyle = i % BEATS_PER_BAR === 0 ? "rgba(255,255,255,.17)" : "rgba(255,255,255,.085)";
+        g.lineWidth = i % BEATS_PER_BAR === 0 ? 1.3 : 1;
+        g.beginPath(); g.moveTo(x, top); g.lineTo(x, bottom); g.stroke();
+      }
+    } else {
+      const first = Math.floor(visibleStart);
+      for (let t = first; t <= visibleEnd + 1; t++) {
+        const x = nowX + (t - now) * this.pps;
+        if ((t % 4 + 4) % 4 === 0) {
+          g.fillStyle = "rgba(255,255,255,.055)";
+          g.fillRect(x, top, this.pps * 4, bottom - top);
+        }
+        g.strokeStyle = "rgba(255,255,255,.08)";
+        g.beginPath(); g.moveTo(x, top); g.lineTo(x, bottom); g.stroke();
+      }
+    }
+  }
+
   _drawNotes(now, nowX) {
     const g = this.ctx;
-    const barH = Math.max(15, TOL * 2 * this.semitonePx);
+    const barH = Math.max(14, 1.05 * this.semitonePx);
     g.textBaseline = "middle";
     g.font = `600 ${this.fontPx}px -apple-system, system-ui, sans-serif`;
 
@@ -363,11 +436,11 @@ export class Game {
       const ratio = n.passed ? n.hit / n.passed : 0;
 
       // base block
-      let base = "rgba(150,150,162,.34)";
+      let base = "rgba(188,188,192,.72)";
       if (n.done && n.scored) {
-        base = ratio >= HIT_RATIO ? "rgba(53,208,127,.30)"
-             : ratio < MISS_RATIO ? "rgba(226,83,75,.26)"
-             : "rgba(150,150,162,.24)";
+        base = ratio >= HIT_RATIO ? "rgba(172,172,178,.62)"
+             : ratio < MISS_RATIO ? "rgba(118,118,124,.28)"
+             : "rgba(150,150,158,.42)";
       } else if (n.done) {
         base = "rgba(150,150,162,.14)";   // passed unobserved; not judged
       }
@@ -376,14 +449,17 @@ export class Game {
       roundRect(g, x0, top, width, barH, radius);
       g.fill();
 
-      // green fill over the portion already sung, scaled by how much landed
-      const passedW = Math.max(0, Math.min(x1, nowX) - x0);
-      if (passedW > 0 && ratio > 0) {
+      // Fill only the exact time spans that were sung in tune.
+      if (n.hitRanges.length) {
         g.save();
         roundRect(g, x0, top, width, barH, radius);
         g.clip();
-        g.fillStyle = ratio >= HIT_RATIO ? "rgba(53,208,127,.92)" : "rgba(53,208,127,.55)";
-        g.fillRect(x0, top, passedW * ratio, barH);
+        g.fillStyle = "rgba(91,198,48,.96)";
+        for (const [a, b] of n.hitRanges) {
+          const rx0 = nowX + (a - now) * PPS;
+          const rx1 = nowX + (Math.max(b, a + .018) - now) * PPS;
+          g.fillRect(rx0, top, Math.max(2, rx1 - rx0), barH);
+        }
         g.restore();
       }
 
@@ -405,8 +481,8 @@ export class Game {
       if (a.m == null || b.m == null || b.gap) continue;
       const f = 1 - (now - b.t) / TRAIL_SEC;   // 1 at the ball, 0 at the tail
       if (f <= 0) continue;
-      g.strokeStyle = `rgba(255,255,255,${(0.85 * f * f).toFixed(3)})`;
-      g.lineWidth = (0.8 + 5.2 * f * f) * this.ui;
+      g.strokeStyle = `rgba(255,255,255,${(0.94 * f * f).toFixed(3)})`;
+      g.lineWidth = (0.6 + 7.4 * f * f) * this.ui;
       g.beginPath();
       g.moveTo(nowX - (now - a.t) * this.pps, this.y(a.m));
       g.lineTo(nowX - (now - b.t) * this.pps, this.y(b.m));
@@ -431,12 +507,12 @@ export class Game {
     }
 
     if (inTune) {
-      g.fillStyle = "rgba(53,208,127,.25)";
+      g.fillStyle = "rgba(255,255,255,.18)";
       g.beginPath();
       g.arc(nowX, y, this.ballR * 2.6, 0, 6.284);
       g.fill();
     }
-    g.fillStyle = inTune ? "#35d07f" : "#fff";
+    g.fillStyle = "#fff";
     g.beginPath();
     g.arc(nowX, y, this.ballR, 0, 6.284);
     g.fill();
@@ -446,33 +522,40 @@ export class Game {
   _drawMinimap(now) {
     const g = this.ctx;
     const hgt = this.mapH;
-    const y0 = this.h - this.padBottom + Math.max(10, this.padBottom * 0.18);
+    const y0 = this.h - this.padBottom + Math.max(9, this.padBottom * 0.12);
     const x0 = this.margin, wid = this.w - this.margin * 2;
     const dur = this.song.durationSeconds;
     const lo = this.mapLo, hi = this.mapHi;
+    const px = x0 + clamp(now / dur, 0, 1) * wid;
 
-    g.fillStyle = "rgba(255,255,255,.04)";
-    roundRect(g, x0, y0, wid, hgt, 8);
+    const tickY = (n) => y0 + hgt - 7 - ((n.midi - lo) / Math.max(1, hi - lo)) * (hgt - 14);
+    const tickX = (n) => x0 + (n.start / dur) * wid;
+    const tickW = (n) => Math.max(1.5, ((n.end - n.start) / dur) * wid);
+
+    // notes still to come: faint marks on bare background
+    for (const n of this.notes) {
+      if (tickX(n) < px) continue;
+      g.fillStyle = "rgba(255,255,255,.30)";
+      roundRect(g, tickX(n), tickY(n), tickW(n), 3.5, 2); g.fill();
+    }
+
+    // the part of the song already played, as a lit capsule that grows
+    const grad = g.createLinearGradient(x0, 0, px, 0);
+    grad.addColorStop(0, "rgba(255,255,255,.10)");
+    grad.addColorStop(1, "rgba(255,255,255,.30)");
+    g.fillStyle = grad;
+    roundRect(g, x0, y0, px - x0, hgt, hgt / 2);
     g.fill();
 
     for (const n of this.notes) {
-      const nx = x0 + (n.start / dur) * wid;
-      const nw = Math.max(1.5, ((n.end - n.start) / dur) * wid);
-      const ny = y0 + hgt - 4 - ((n.midi - lo) / Math.max(1, hi - lo)) * (hgt - 8);
+      if (tickX(n) >= px) continue;
       g.fillStyle = n.scored
-        ? (n.ratio >= HIT_RATIO ? "rgba(53,208,127,.95)" : "rgba(255,255,255,.18)")
-        : "rgba(255,255,255,.34)";
-      g.fillRect(nx, ny, nw, 2.5);
+        ? (n.ratio >= HIT_RATIO ? "rgba(30,214,125,.98)" : "rgba(255,255,255,.22)")
+        : "rgba(255,255,255,.45)";
+      roundRect(g, tickX(n), tickY(n), tickW(n), 3.5, 2); g.fill();
     }
-
-    const px = x0 + Math.min(1, now / dur) * wid;
-    g.strokeStyle = "rgba(255,255,255,.75)";
-    g.lineWidth = 1.5;
-    g.beginPath();
-    g.moveTo(px, y0 - 3);
-    g.lineTo(px, y0 + hgt + 3);
-    g.stroke();
   }
+
 }
 
 function roundRect(g, x, y, w, h, r) {

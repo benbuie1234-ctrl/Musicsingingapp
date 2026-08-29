@@ -43,7 +43,21 @@ your own songs can be committed with `git add -f`.
 
 ## Preparing a song
 
-Three steps, all offline and one-time per track:
+For an automatically cross-checked local chart, use the end-to-end command:
+
+```bash
+python3 extract/prepare_song.py "your-song.wav" --id your-song \
+    --title "Title" --artist "Artist"
+```
+
+It runs both standard Demucs and the four-model fine-tuned ensemble, extracts the chart
+from the standard stem, cross-checks it against the independent ensemble, converts the
+browser mix, and updates the local-only catalog. Matching alternate evidence can
+automatically recover quiet notes that the first separation rejected. Disagreement is
+kept only as diagnostic evidence: automatically deleting every disagreement would
+remove real breathy notes too.
+
+The individual pipeline consists of these steps:
 
 ```bash
 python3 -m demucs --two-stems=vocals -d mps -o separated "your-song.m4a"
@@ -60,6 +74,13 @@ below.
 Then put the **full mix** at `web/audio/<id>.m4a` and add an entry to `web/songs.json`
 with a matching `id`. Separation takes about 20 seconds for a 3-minute track on Apple
 silicon (use `-d cpu` if MPS is unavailable).
+
+For commercial songs that must remain local, add the entry to
+`web/songs.local.json` instead. That gitignored catalog takes precedence on localhost;
+the public deployment falls back to `web/songs.json`.
+
+The generated result is immediately playable. Separator agreement and vocal dominance
+are resolved by the pipeline itself; there is no separate browser chart-review step.
 
 The two halves come from different audio on purpose: you hear the full commercial mix,
 while the notes you are asked to hit come from the separated vocal alone.
@@ -118,9 +139,11 @@ name, the best score, side-by-side cards. It is the same design with more space.
 Append `?debug` to the URL to expose `window.__sing` with the song clock, the audio
 context and the live scoring state.
 
-For timing experiments, `?debug&debugOffset=150` draws blocks 150 ms later while
-leaving playback and scoring unchanged. The value is clamped to ±500 ms and exists
-only for measurement; it is intentionally not a user-facing latency control.
+Blocks are drawn 150 ms later than the literal vocal timestamp, matching the scoring
+grace zone so a singer reacting at the line does not see the target already behind
+them. Playback, map timestamps and scoring remain exact. For timing experiments,
+`?debug&debugOffset=0` overrides that visual guidance delay. The value is clamped to
+±500 ms and is intentionally not a user-facing latency control.
 
 ## Audio is not in this repo
 
@@ -155,9 +178,16 @@ nearest the target before it is compared, so a voice that cannot reach the recor
 register still scores the line correctly. This is not a free pass: folding accepts
 octaves and nothing else — a fifth off still fails.
 
-A note counts as hit if you held it within 0.7 semitones for at least 40% of its
-length. That tolerance is exactly the on-screen thickness of the block, so the rule is
-simply: if the ball is inside the block, you are in tune.
+A note counts as hit if you held it within **0.5 semitones** for at least **50%** of
+its length. Half a semitone is the midpoint to the neighbouring note: a singer gets
+normal room for attacks and vibrato, but the adjacent note never counts. The rule is
+still visible rather than mysterious: if the centre of the ball is inside the block,
+you are in tune.
+
+The game also tracks a tighter **perfect** zone within 0.2 semitones (20 cents). It is
+used for bonus points and feedback, never as the minimum needed to pass a note. A hit
+earns 100 points, centred notes add 50, and a sustained streak adds up to 100 more per
+note. The final accuracy remains the plain percentage of notes hit.
 
 **Timing has 150 ms of slack either side.** A singer reacting to a block arriving is
 always slightly behind it, and that lag is not a pitch error. Only the note's own span
@@ -185,7 +215,7 @@ from gluing repeated notes back together.
 
 A gap between blocks therefore means one thing: nobody is singing.
 
-### Reviewing and correcting a map
+### Diagnosing a map
 
 Automatic segmentation produces a reviewable first pass, not an excuse to tune one
 global threshold around every unusual lyric. Ask the segmenter for a compact timestamp
@@ -195,9 +225,8 @@ queue of short notes, large leaps and isolated spikes:
 python3 extract/segment_notes.py web/public/maps/too-much.json --diagnose
 ```
 
-Human corrections live beside the map at
-`web/public/maps/too-much.overrides.json`. Like the third-party map, that file is
-gitignored. It is reapplied automatically every time the map is segmented:
+If a specific timestamp is reported later, a compact correction file can live beside
+the map and is reapplied automatically every time the map is segmented:
 
 ```json
 {

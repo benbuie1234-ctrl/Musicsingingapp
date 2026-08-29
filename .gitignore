@@ -9,6 +9,7 @@
 *.ogg
 *.opus
 separated/
+separated-ft/
 stems/
 audio/
 
@@ -17,6 +18,10 @@ audio/
 # music than to analysis -- and this repo is public. Maps for your own songs
 # can be force-added.
 web/public/maps/*.json
+
+# Album art is extracted from the tracks themselves, so it is copyrighted too.
+web/art/
+web/songs.local.json
 
 # --- Python ---
 .venv/

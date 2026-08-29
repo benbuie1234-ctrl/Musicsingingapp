@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#050506">
+<meta name="theme-color" content="#0c0c0e">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12,30 +12,58 @@
 </head>
 <body>
 
-<main id="dashboard">
-  <header class="top">
-    <h1>Sing</h1>
-    <p class="sub">Pick a song and sing it. Headphones required.</p>
-  </header>
-  <section id="songs" class="songs"></section>
+<!-- ---------- library: the app opens here ---------- -->
+<main id="library">
+  <h1 class="screen-title">Your Songs</h1>
+  <div id="songs" class="grid"></div>
 </main>
 
+<!-- ---------- one song ---------- -->
+<main id="song" hidden>
+  <div id="song-bg" class="song-bg"></div>
+  <div class="song-scrim"></div>
+
+  <button id="song-back" class="round-btn" aria-label="Back to songs">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
+  <div class="song-best">
+    <span class="best-badge">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v3a5 5 0 0 1-10 0V4zM5 5h2v2a3 3 0 0 1-2-2zm14 0a3 3 0 0 1-2 2V5h2zM10 13h4v3h3v2H7v-2h3v-3z" fill="currentColor"/></svg>
+    </span>
+    <span class="best-text">Your best:<b id="song-best">—</b></span>
+  </div>
+
+  <div class="song-head">
+    <h2 id="song-title"></h2>
+    <p id="song-artist"></p>
+  </div>
+
+  <button id="song-play" class="play-btn">Play</button>
+</main>
+
+<!-- ---------- gameplay ---------- -->
 <main id="player" hidden>
   <canvas id="stage"></canvas>
-  <div id="audio-status" class="audio-status" role="status" hidden></div>
+
+  <button id="back" class="round-btn player-back" aria-label="Back">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
 
   <div class="hud">
-    <button id="back" class="ghost" title="Back to songs">&larr;</button>
-    <div class="hud-song"><b id="hud-title"></b><span id="hud-artist"></span></div>
-    <div class="hud-score"><b id="score">0%</b><span id="score-detail">0 / 0 notes</span></div>
-    <div class="hud-best">Best <b id="best">--</b></div>
+    <div class="hud-score"><b id="score">0%</b></div>
+    <div class="hud-best">Your best: <b id="best">—</b></div>
   </div>
+
+  <div id="audio-status" class="audio-status" role="status" hidden></div>
+
+  <div id="rotate-hint" class="rotate-hint" hidden>Turn your phone sideways</div>
 
   <div id="overlay" class="overlay" hidden>
     <div class="card">
       <h2 id="ov-title">Ready</h2>
       <p id="ov-body"></p>
-      <button id="ov-action" class="primary">Start</button>
+      <button id="ov-action" class="play-btn">Start</button>
     </div>
   </div>
 </main>

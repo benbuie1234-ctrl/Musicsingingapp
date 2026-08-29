@@ -16,6 +16,7 @@ import sys
 import numpy as np
 
 from audio_io import load_mono
+from beats import detect as detect_beats
 from onsets import detect as detect_onsets
 from yin import track
 
@@ -148,6 +149,7 @@ def main():
     # top of instruments; the singer is mixed loud, so real singing sits near or
     # above the accompaniment while leakage sits far below it.
     dominance = None
+    beats = []
     if args.accompaniment:
         print(f"comparing against {args.accompaniment}")
         acc, _ = load_mono(args.accompaniment, SR)
@@ -162,6 +164,11 @@ def main():
         if len(inside):
             print(f"  vocal-vs-accompaniment over voiced frames: "
                   f"median {np.median(inside):+.1f} dB, p10 {np.percentile(inside,10):+.1f} dB")
+        print("finding accompaniment beat grid")
+        beats = detect_beats(acc, SR, HOP)
+        if len(beats) > 2:
+            bpm = 60.0 / np.median(np.diff(beats))
+            print(f"  {len(beats)} beats, estimated {bpm:.1f} BPM")
 
     payload = {
         "version": 1,
@@ -174,6 +181,7 @@ def main():
         "midi": [round(float(m), 2) if v else None for m, v in zip(midi, voiced)],
         "levelDb": [round(float(r), 1) for r in rel],
         "onsets": [int(i) for i in onsets],
+        "beatSeconds": beats,
     }
     if dominance is not None:
         payload["dominanceDb"] = [round(float(v), 1) for v in dominance]

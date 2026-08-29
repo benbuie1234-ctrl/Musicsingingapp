@@ -25,6 +25,7 @@ const song = {
   midi: [], hopSeconds: 0.01, durationSeconds: 2,
 };
 const game = new Game(canvas, song, { currentTime: 0 }, { read: () => null });
+assert.equal(game.visualOffset, 0.15, "visual guidance matches scoring grace by default");
 
 // A single startup reading is not enough to flash the ball into view.
 assert.equal(game._acceptPitch(48, 0.01, 0.01), false);
@@ -37,13 +38,27 @@ const before = game.smooth;
 game._acceptPitch(55, 0.03, 0.03); // three-sample median still reports the old pitch
 assert.ok(Math.abs(game.smooth - before) < 0.05);
 assert.equal(game._acceptPitch(55.05, 0.04, 0.04), false);
-assert.equal(game._acceptPitch(55.1, 0.05, 0.05), true);
+assert.equal(game._acceptPitch(55.1, 0.05, 0.05), false);
+assert.equal(game._acceptPitch(55.08, 0.06, 0.06), true);
 assert.ok(Math.abs(game.smooth - before) > 0.1, "confirmed pitch movement advances the ball");
 
 // Visual release does not leak into scoring.
-game.scorePitch = null;
-game._score(0.5, game.scorePitch);
+game._score(0.5, null);
 assert.equal(game.notes[0].hit, 0);
 
 game.destroy();
+
+// Half a semitone is accepted, while the neighbouring side of that midpoint is not.
+const exact = new Game(canvas, song, { currentTime: 0 }, { read: () => null });
+exact._score(0.5, 60.49);
+exact._score(1.2, null);
+assert.equal(exact.hits, 1);
+assert.equal(exact.points, 100, "a valid but not perfectly centred note earns base points");
+exact.destroy();
+
+const adjacent = new Game(canvas, song, { currentTime: 0 }, { read: () => null });
+adjacent._score(0.5, 60.51);
+adjacent._score(1.2, null);
+assert.equal(adjacent.hits, 0, "a pitch beyond the midpoint to the next note does not pass");
+adjacent.destroy();
 console.log("web game tests passed");

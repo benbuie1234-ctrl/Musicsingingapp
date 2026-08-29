@@ -46,9 +46,21 @@ def apply_overrides(notes, path):
     the nearest block within 500 ms). This survives small segmentation changes
     much better than identifying a note by array index.
     """
-    doc = json.load(open(path))
+    with open(path) as fh:
+        doc = json.load(fh)
     if doc.get("version") != 1:
         raise ValueError(f"unsupported override version in {path}")
+    if "replace" in doc:
+        out = []
+        for item in doc["replace"]:
+            n = {key: float(item[key]) for key in ("start", "end", "midi")}
+            n["start"], n["end"] = round(n["start"], 3), round(n["end"], 3)
+            n["midi"] = round(n["midi"], 2)
+            n["name"] = note_name(n["midi"])
+            out.append(n)
+        out.sort(key=lambda n: (n["start"], n["end"]))
+        validate_notes(out)
+        return out, len(out), 0
     out = [dict(n) for n in notes]
     used = set()
     for edit in doc.get("edits", []):
@@ -77,12 +89,16 @@ def apply_overrides(notes, path):
         n["name"] = note_name(n["midi"])
         out.append(n)
     out.sort(key=lambda n: (n["start"], n["end"]))
-    for i, n in enumerate(out):
+    validate_notes(out)
+    return out, len(doc.get("edits", [])), len(doc.get("add", []))
+
+
+def validate_notes(notes):
+    for i, n in enumerate(notes):
         if n["start"] < 0 or n["end"] <= n["start"]:
             raise ValueError(f"invalid corrected note at {n['start']:.3f}s")
-        if i and n["start"] < out[i - 1]["end"] - 0.001:
+        if i and n["start"] < notes[i - 1]["end"] - 0.001:
             raise ValueError(f"corrected notes overlap near {n['start']:.3f}s")
-    return out, len(doc.get("edits", [])), len(doc.get("add", []))
 
 
 def suspicious_notes(notes):
@@ -238,19 +254,39 @@ def main():
         print(f"  note-level octave fixes: {fixed}")
 
     notes = []
+    rejected = []
     dropped_leak = 0
     for n in merged:
+        evidence = {
+            "pitchSpreadSt": round(float(np.percentile(arr[n["a"]:n["b"]], 90) -
+                                                np.percentile(arr[n["a"]:n["b"]], 10)), 2)
+        }
+        if dominance is not None:
+            dom = dominance[n["a"]:max(n["a"] + 1, n["b"])]
+            evidence["vocalDominanceDb"] = round(float(np.median(dom)), 1)
+            evidence["vocalDominanceP10Db"] = round(float(np.percentile(dom, 10)), 1)
         if not (PLAUSIBLE[0] <= n["pitch"] <= PLAUSIBLE[1]):
+            rejected.append({
+                "start": round(n["a"] * hop, 3), "end": round(n["b"] * hop, 3),
+                "midi": round(n["pitch"], 2), "name": note_name(n["pitch"]),
+                "reason": "outside vocal range", "evidence": evidence,
+            })
             continue
         if dominance is not None:
-            if float(np.median(dominance[n["a"]:max(n["a"] + 1, n["b"])])) < MIN_DOMINANCE_DB:
+            if evidence["vocalDominanceDb"] < MIN_DOMINANCE_DB:
                 dropped_leak += 1
+                rejected.append({
+                    "start": round(n["a"] * hop, 3), "end": round(n["b"] * hop, 3),
+                    "midi": round(n["pitch"], 2), "name": note_name(n["pitch"]),
+                    "reason": "possible accompaniment leakage", "evidence": evidence,
+                })
                 continue
         notes.append({
             "start": round(n["a"] * hop, 3),
             "end": round(n["b"] * hop, 3),
             "midi": round(n["pitch"], 2),
             "name": note_name(n["pitch"]),
+            "evidence": evidence,
         })
 
     override_path = Path(args.overrides) if args.overrides else Path(path).with_suffix(".overrides.json")
@@ -260,6 +296,7 @@ def main():
         notes, edited, added = apply_overrides(notes, override_path)
         print(f"  applied overrides: {edited} edits, {added} additions from {override_path}")
     doc["notes"] = notes
+    doc["rejectedNotes"] = rejected
     json.dump(doc, open(path, "w"), separators=(",", ":"))
 
     durs = np.array([n["end"] - n["start"] for n in notes])
